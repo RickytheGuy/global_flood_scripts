@@ -120,12 +120,12 @@ class FloodManager:
 
     def run_one_dem_type(self, ex: ProcessPoolExecutor, dem_type: str):
         original_dems = glob.glob(os.path.join(self.dem_dirs[self.dem_names.index(dem_type)], '*.tif'), recursive=True)
-        original_dems = get_dem_in_extent(self.bbox[0], self.bbox[1], self.bbox[2], self.bbox[3], original_dems, dem_type)
+        og_dems_filtered = get_dem_in_extent(self.bbox[0], self.bbox[1], self.bbox[2], self.bbox[3], original_dems, dem_type)
         buffered_dems = []
         for buffered_dem in start_unthrottled_pbar(ex, 
                                                    buffer_dem,
                                                    f"Buffering DEMs for {dem_type}",
-                                                   original_dems,
+                                                   og_dems_filtered,
                                                    dems=original_dems,
                                                    output_dir=self.output_dir,
                                                    dem_type=dem_type,
