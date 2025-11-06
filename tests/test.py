@@ -3,7 +3,7 @@ from global_floodmaps import FloodManager
 
 
 if __name__ == "__main__":
-    bbox = [-111, 39, -110, 40]
+    bbox = [-123, 37, -122, 38]
 
     dem_dirs = [
         r"C:\Users\lrr43\Documents\fabdems",

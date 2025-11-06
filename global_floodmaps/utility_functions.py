@@ -1,5 +1,6 @@
 import os
 import re
+import glob
 from functools import partial
 
 import tqdm
@@ -236,3 +237,25 @@ def is_tile_in_valid_tiles(minx: float, miny: float, valid_tiles: list[list[int]
         return True
     return [round(minx), round(miny)] in valid_tiles
 
+def _get_files_helper(bbox: list[float], all_files: list[str]) -> list[str]:
+    minx, miny, maxx, maxy = bbox
+    files = filter_files_in_extent_by_lat_lon_dirs(minx, miny, maxx, maxy, all_files)
+
+    if len(files) == 0:
+        raise ValueError("No files found for area")
+    
+    return files
+
+def convert_area_to_single_map(bbox: list[float], all_files: list[str], output_file: str) -> tuple[list[float], int, int]:
+    files = _get_files_helper(bbox, all_files)
+
+    options = gdal.WarpOptions(format='GTiff',
+                        dstNodata=0,
+                        outputType=gdal.GDT_Byte,
+                        creationOptions=['COMPRESS=ZSTD', 'PREDICTOR=2', 'ZSTD_LEVEL=9'])
+    gdal.Warp(output_file, files, options=options)
+
+def convert_area_to_single_vrt(bbox: list[float], all_files: list[str], output_file: str) -> tuple[list[float], int, int]:
+    files = _get_files_helper(bbox, all_files)
+
+    gdal.BuildVRT(output_file, files, options=gdal.BuildVRTOptions(srcNodata=255))
