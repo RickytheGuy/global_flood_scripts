@@ -38,7 +38,13 @@ class FloodManager:
                  buffer_dems_as_vrt: bool = True, 
                  arc_args: dict = {},
                  c2f_bathymetry_args: dict = {},
-                 c2f_floodmap_args: dict = {}):
+                 c2f_floodmap_args: dict = {},
+                 overwrite_floodmaps: bool = False,
+                 overwrite_burned_dems: bool = False,
+                 overwrite_vdts: bool = False,
+                 overwrite_streams: bool = False,
+                 overwrite_landuse: bool = False,
+                 overwrite_buffered_dems: bool = False):
         """
         Initialize a FloodManager instance.
 
@@ -118,6 +124,13 @@ class FloodManager:
         self.c2f_bathymetry_args = c2f_bathymetry_args
         self.c2f_floodmap_args = c2f_floodmap_args
 
+        self.overwrite_floodmaps = overwrite_floodmaps
+        self.overwrite_burned_dems = overwrite_burned_dems
+        self.overwrite_vdts = overwrite_vdts
+        self.overwrite_streams = overwrite_streams
+        self.overwrite_landuse = overwrite_landuse
+        self.overwrite_buffered_dems = overwrite_buffered_dems
+
     def run_one_dem_type(self, ex: ProcessPoolExecutor, dem_type: str):
         original_dems = glob.glob(os.path.join(self.dem_dirs[self.dem_names.index(dem_type)], '*.tif'), recursive=True)
         og_dems_filtered = get_dem_in_extent(self.bbox[0], self.bbox[1], self.bbox[2], self.bbox[3], original_dems, dem_type)
@@ -131,18 +144,19 @@ class FloodManager:
                                                    dem_type=dem_type,
                                                    buffer_distance=self.buffer_distance,
                                                    valid_tiles=self.valid_tiles,
-                                                   as_vrt=self.buffer_dems_as_vrt):
+                                                   as_vrt=self.buffer_dems_as_vrt,
+                                                   overwrite=self.overwrite_buffered_dems):
             if buffered_dem:
                 buffered_dems.append(buffered_dem)
 
         limit = _convert_process_count({'fabdem': 31, 'alos': 20, 'tilezen': 21}.get(dem_type, os.cpu_count()))
         start_throttled_pbar(ex, rasterize_streams, f"Rasterizing streams for {dem_type}", 
                              buffered_dems, limit, dem_type=dem_type, 
-                             bounds=self.stream_bounds)
+                             bounds=self.stream_bounds, overwrite=self.overwrite_streams)
 
         start_unthrottled_pbar(ex, warp_land_use, f"Warping land use for {dem_type}", 
                                buffered_dems, dem_type=dem_type, 
-                               landcover_directory=self.landcover_directory)
+                               landcover_directory=self.landcover_directory, overwrite=self.overwrite_landuse)
 
         stream_files = glob.glob(os.path.join(self.output_dir, '*', '*', f'inputs={dem_type}', 'streams.tif'))
         stream_files = filter_files_in_extent_by_lat_lon_dirs(self.bbox[0], self.bbox[1], self.bbox[2], self.bbox[3], stream_files)
@@ -160,13 +174,13 @@ class FloodManager:
 
         inputs = glob.glob(os.path.join(self.output_dir, '*', '*', f'inputs={dem_type}', 'inputs=arc.txt'))
         inputs = filter_files_in_extent_by_lat_lon_dirs(self.bbox[0], self.bbox[1], self.bbox[2], self.bbox[3], inputs)
-        start_unthrottled_pbar(ex, run_arc, f"Running ARC for {dem_type}", inputs, dem_type=dem_type)
+        start_unthrottled_pbar(ex, run_arc, f"Running ARC for {dem_type}", inputs, dem_type=dem_type, overwrite=self.overwrite_vdts)
 
         inputs = glob.glob(os.path.join(self.output_dir, '*', '*', f'inputs={dem_type}', 'inputs=burned.txt'))
         inputs = filter_files_in_extent_by_lat_lon_dirs(self.bbox[0], self.bbox[1], self.bbox[2], self.bbox[3], inputs)
         limit = _convert_process_count({'fabdem': 32, 'alos': 17, 'tilezen': 25}.get(dem_type, os.cpu_count()))
         start_throttled_pbar(ex, run_c2f_bathymetry, f"Preparing burned DEMs for {dem_type}", 
-                               inputs, limit, dem_type=dem_type)
+                               inputs, limit, dem_type=dem_type, overwrite=self.overwrite_burned_dems)
 
         names = []
         if self.rps:
@@ -179,7 +193,7 @@ class FloodManager:
         inputs = filter_files_in_extent_by_lat_lon_dirs(self.bbox[0], self.bbox[1], self.bbox[2], self.bbox[3], inputs)
         limit = _convert_process_count({'fabdem': 32, 'alos': 23, 'tilezen': 27}.get(dem_type, os.cpu_count()))
         start_throttled_pbar(ex, run_c2f_floodmaps, f"Creating floodmaps for {dem_type}", 
-                               inputs, limit, dem_type=dem_type)
+                               inputs, limit, dem_type=dem_type, overwrite=self.overwrite_floodmaps)
         
         floodmap_dirs = glob.glob(os.path.join(self.output_dir, '*', '*', f'floodmaps={dem_type}'))
         floodmap_dirs = filter_files_in_extent_by_lat_lon_dirs(self.bbox[0], self.bbox[1], self.bbox[2], self.bbox[3], floodmap_dirs)
@@ -205,7 +219,7 @@ class FloodManager:
                             cluster.append(rp_tif)
                     fmaps.append(cluster)
 
-                start_unthrottled_pbar(ex, majority_vote_all_return_periods, "Majority voting floodmaps across DEM types", fmaps)
+                start_unthrottled_pbar(ex, majority_vote_all_return_periods, "Majority voting floodmaps across DEM types", fmaps, overwrite=self.overwrite_floodmaps)
                 pbar.update(1)
             
 

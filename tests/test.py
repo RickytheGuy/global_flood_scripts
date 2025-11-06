@@ -28,4 +28,7 @@ if __name__ == "__main__":
         bbox=bbox,
         rps=[2, 5, 10, 25, 50, 100],
         valid_tiles_file=tiles_file,
+        # overwrite_floodmaps=True,
+        # overwrite_burned_dems=True,
+        # overwrite_vdts=True
     ).run_all()

@@ -170,7 +170,14 @@ def _convert_process_count(n: int) -> int:
     
     return int(psutil.virtual_memory().total / (1024 ** 3) / mem_per_process)
 
-def buffer_dem(dem: str, output_dir: str, dems: list[str], dem_type: str, buffer_distance: float, valid_tiles: list[list[int]] = None, as_vrt: bool = True) -> str:
+def buffer_dem(dem: str, 
+               output_dir: str,
+               dems: list[str], 
+               dem_type: str, 
+               buffer_distance: float, 
+               valid_tiles: list[list[int]] = None, 
+               as_vrt: bool = True,
+               overwrite: bool = False) -> str:
     """
     Create a buffered version of a single DEM tile by assembling all DEMs that intersect
     the tile's buffered bounding box and writing either a VRT or a warped raster.
@@ -204,6 +211,8 @@ def buffer_dem(dem: str, output_dir: str, dems: list[str], dem_type: str, buffer
         If True (default) the function builds a VRT of the buffered extent (faster,
         lightweight). If False, a GDAL warp is performed and a raster file (same basename
         as `dem`) is written.
+    overwrite : bool, optional
+        If True, forces re-creation of the buffered DEM even if the output file already exists.
 
     Returns
     -------
@@ -213,36 +222,13 @@ def buffer_dem(dem: str, output_dir: str, dems: list[str], dem_type: str, buffer
         outside the area of interest, returns an empty string. If the target output file
         already exists and is readable (opens_right returns True), the existing path is
         returned immediately.
-
-    Side effects
-    ------------
-    - Creates the output directory (os.makedirs) as needed.
-    - Calls GDAL to build a VRT or warp a raster (gdal.BuildVRT / gdal.Warp).
-    - Calls several helper functions (dem_to_dir, opens_right, get_dataset_info,
-      convert_gt_to_bbox, is_tile_in_valid_tiles, get_dem_in_extent) whose behaviors
-      influence processing.
-
-    Errors / Exceptions
-    -------------------
-    Raises ValueError in the following cases:
-    - If the DEM's geotransform indicates units other than degrees (abs(gt[5]) > 0.01),
-      since buffering is only supported in degree units.
-    - If the original `dem` is not present in the list of DEMs that intersect the
-      buffered extent (an unexpected state for the caller).
-      
-    Notes
-    -----
-    - Resampling algorithm used for both VRT build and Warp is 'nearest'.
-    - The function expects the input DEM geotransform to represent north-up rasters and
-      will compute the bounding box via convert_gt_to_bbox.
-    - The function replaces a ".tif" output filename with ".vrt" when as_vrt is True.
     """
     out_dir = dem_to_dir(dem, output_dir)
     output_dem = os.path.join(out_dir, 'dems', os.path.basename(dem))
     if as_vrt:
         output_dem = output_dem.replace('.tif', '.vrt')
     
-    if opens_right(output_dem):
+    if opens_right(output_dem) and not overwrite:
         return output_dem
 
     width, height, gt, _ = get_dataset_info(dem)
@@ -279,7 +265,8 @@ def buffer_dem(dem: str, output_dir: str, dems: list[str], dem_type: str, buffer
 def rasterize_streams(dem: str, 
                     dem_type: str, 
                     bounds: dict[str, tuple[float, float, float, float]], 
-                    min_stream_order: int = 1):
+                    min_stream_order: int = 1,
+                    overwrite: bool = False):
     """
     Rasterize vector stream layers into a GIS-aligned raster (streams.tif) matching a given DEM.
     This function creates a single-band GeoTIFF named "streams.tif" under the directory
@@ -303,34 +290,12 @@ def rasterize_streams(dem: str,
         Minimum stream order to include (default 1). When >1, an attribute filter
         "CAST(strmOrder AS INTEGER) >= {min_stream_order}" is applied to each OGR layer
         before rasterization.
-
-    Behavior / Side effects
-    ----------------------
-    - If the target streams.tif already exists and opens_right(stream_file) returns True,
-        the function returns immediately and does nothing.
-    - Uses get_dataset_info(dem) and convert_gt_to_bbox(...) to determine the DEM extent.
-    - Selects vector files from the provided bounds whose bbox intersects the DEM.
-    - Creates the output directory (os.makedirs) if needed and creates a one-band Int32 GeoTIFF
-        sized to the DEM with the DEM's geotransform and projection.
-    - For each selected vector file:
-        - Opens it with ogr.Open(), obtains the layer, optionally applies the stream-order filter,
-            and rasterizes the layer into the output raster using gdal.RasterizeLayer(..., options=["ATTRIBUTE=LINKNO"]).
-        - Flushes the dataset cache after each rasterization and closes OGR/GDAL objects.
-    - After rasterizing all selected layers, calls clean_stream_raster(stream_file) for any required post-processing.
-
-    Notes and requirements
-    ----------------------
-    - The function expects the vector layers to contain an integer-identifying attribute named "LINKNO"
-        (or at least an attribute that can be written as integer values into the raster).
-    - Vector layers should be in the same CRS as the DEM; otherwise rasterization will not align properly.
-    - Bounds tuple order is (minx, miny, maxx, maxy).
-    - The function does not catch GDAL/OGR exceptions — failures to open datasets or create files
-        will propagate up to the caller.
-    - Returns None. The primary result is the side-effect of creating/modifying the streams.tif file.
+    overwrite : bool, optional
+        If True, forces re-creation of the streams.tif file even if it already exists.
     """
     stream_file = os.path.join(_dir(dem, 2), f'inputs={dem_type}', 'streams.tif')
 
-    if opens_right(stream_file):
+    if opens_right(stream_file) and not overwrite:
         return
     
     width, height, gt, proj = get_dataset_info(dem)
@@ -368,7 +333,11 @@ def rasterize_streams(dem: str,
     stream_ds = None
     clean_stream_raster(stream_file)
 
-def warp_land_use(dem: str, dem_type: str, landcover_directory: str, save_vrt: bool = True):
+def warp_land_use(dem: str, 
+                  dem_type: str, 
+                  landcover_directory: str, 
+                  save_vrt: bool = True,
+                  overwrite: bool = False):
     """
     Generate or warp a land-use raster to match a target DEM's extent, resolution, and projection.
     This function constructs an output path for a land-use raster (land_use.tif) next to the
@@ -379,37 +348,22 @@ def warp_land_use(dem: str, dem_type: str, landcover_directory: str, save_vrt: b
     
     Parameters
     ----------
-        dem (str):
-            Filesystem path to the reference DEM raster used to determine output geometry,
-            resolution, extent, and projection.
-        dem_type (str):
-            A short identifier used when constructing the output directory path (used in
-            inputs=<dem_type>/land_use.tif).
-        landcover_directory (str):
-            Local directory containing pre-downloaded ESA WorldCover tiles named
-            "<tile>.tif". If a tile is not present locally, the function falls back to a
-            canonical S3 /vsis3 path for ESA WorldCover tiles.
-        save_vrt (bool, optional):
-            If True (default) build and save a VRT that references the source tiles using
-            gdal.BuildVRT. If False, perform a GDAL warp to produce a single compressed
-            GeoTIFF matching the DEM geometry.
-
-    Returns:
-        None
-
-    Side effects:
-        - Writes an output file named "land_use.tif" into a sibling "inputs=<dem_type>"
-          directory of the DEM (either a VRT or a GeoTIFF).
-        - May read the ESA tiles index (ESA_TILES_FILE) via geopandas to find intersecting tiles.
-        - Uses GDAL API calls (BuildVRT, Warp, Create) and expects GDAL/GeoPandas to be available.
-        - If no landcover tiles are found, creates a GTiff of the target size/projection filled
-          with the value 10 and with compression ("ZSTD", predictor 2).
-
-    Errors/Exceptions:
-        - GDAL or file I/O errors raised by underlying gdal operations will propagate.
-        - If ESA_TILES_FILE cannot be read or the helper utilities (e.g. get_dataset_info,
-          convert_gt_to_bbox, opens_right, _dir) are missing/not behaving as expected,
-          the function may raise errors.
+    dem (str):
+        Filesystem path to the reference DEM raster used to determine output geometry,
+        resolution, extent, and projection.
+    dem_type (str):
+        A short identifier used when constructing the output directory path (used in
+        inputs=<dem_type>/land_use.tif).
+    landcover_directory (str):
+        Local directory containing pre-downloaded ESA WorldCover tiles named
+        "<tile>.tif". If a tile is not present locally, the function falls back to a
+        canonical S3 /vsis3 path for ESA WorldCover tiles.
+    save_vrt (bool, optional):
+        If True (default) build and save a VRT that references the source tiles using
+        gdal.BuildVRT. If False, perform a GDAL warp to produce a single compressed
+        GeoTIFF matching the DEM geometry.
+    overwrite (bool, optional):
+        If True, forces re-creation of the land_use.tif file even if it already exists.
 
     Notes:
         - Resampling algorithm is 'mode' to preserve categorical landcover classes.
@@ -419,7 +373,7 @@ def warp_land_use(dem: str, dem_type: str, landcover_directory: str, save_vrt: b
     """
     lu_file = os.path.join(_dir(dem, 2), f'inputs={dem_type}', 'land_use.tif')
 
-    if opens_right(lu_file):
+    if opens_right(lu_file) and not overwrite:
         return
     
     width, height, gt, proj = get_dataset_info(dem)
@@ -755,13 +709,13 @@ def prepare_inputs(dem: str,
         f.write(f"Flow_File\t{bmf}\n")
         f.write(f"Degree_Manip\t{arc_args.get('Degree_Manip', 6.5)}\n")
         f.write(f"Degree_Interval\t{arc_args.get('Degree_Interval', 1)}\n")
-        f.write(f"Low_Spot_Range\t{arc_args.get('Low_Spot_Range', 2)}\n")
-        f.write(f"Gen_Slope_Dist\t{arc_args.get('Gen_Slope_Dist', 10)}\n")
-        f.write(f"Gen_Dir_Dist\t{arc_args.get('Gen_Dir_Dist', 10)}\n")
+        f.write(f"Low_Spot_Range\t{arc_args.get('Low_Spot_Range', 2 if dem_type == 'fabdem' else 4)}\n")
+        f.write(f"Gen_Slope_Dist\t{arc_args.get('Gen_Slope_Dist', 10 if dem_type == "fabdem" else 20)}\n")
+        f.write(f"Gen_Dir_Dist\t{arc_args.get('Gen_Dir_Dist', 10 if dem_type == "fabdem" else 20)}\n")
         f.write(f"X_Section_Dist\t{x_sect_dist}\n")
 
         f.write("\n# Output files - Required\n")
-        f.write(f"VDT_Database_NumIterations\t{arc_args.get('VDT_Database_NumIterations', 30)}\n")
+        f.write(f"VDT_Database_NumIterations\t{arc_args.get('VDT_Database_NumIterations', 15)}\n")
         f.write(f"Print_VDT_Database\t{vdt}\n")
 
         f.write("\n# Parameters - Required\n")
@@ -841,7 +795,7 @@ def prepare_inputs(dem: str,
                 f.write(f"TW_MultFact\t{c2f_floodmap_args.get('TW_MultFact', 1.5)}\n")
                 f.write(f"TopWidthPlausibleLimit\t{max_tw}\n")
 
-def run_arc(input_file: str, dem_type: str):
+def run_arc(input_file: str, dem_type: str, overwrite: bool = False):
     """
     Run the ARC model.
 
@@ -851,12 +805,14 @@ def run_arc(input_file: str, dem_type: str):
         Path to the ARC input text file.
     dem_type : str
         DEM type identifier used to construct output paths.
+    overwrite : bool, optional  
+        If True, forces re-execution even if output files already exist.
     """
     out_dir = _dir(input_file, 2)
 
     vdt = os.path.join(out_dir, 'vdts', f'vdt={dem_type}.parquet')
 
-    if opens_right(vdt):
+    if opens_right(vdt) and not overwrite:
         return
     
     try:
@@ -865,7 +821,7 @@ def run_arc(input_file: str, dem_type: str):
         print(input_file)
         raise
 
-def run_c2f_bathymetry(input_file: str, dem_type: str):
+def run_c2f_bathymetry(input_file: str, dem_type: str, overwrite: bool = False):
     """
     Run the Curve2Flood bathymetry generation.
     Parameters
@@ -874,20 +830,22 @@ def run_c2f_bathymetry(input_file: str, dem_type: str):
         Path to the Curve2Flood bathymetry input text file.
     dem_type : str
         DEM type identifier used to construct output paths.
+    overwrite : bool, optional  
+        If True, forces re-execution even if output files already exist.
     """
     out_dir = _dir(input_file, 2)
 
     burned_dem = os.path.join(out_dir, 'burned_dems', f'dem_burned={dem_type}.tif')
     vdt = os.path.join(out_dir, 'vdts', f'vdt={dem_type}.parquet')
 
-    if not opens_right(burned_dem) and os.path.exists(vdt):
+    if (not opens_right(burned_dem) or overwrite) and os.path.exists(vdt):
         try:
             Curve2Flood_MainFunction(input_file, quiet=True)
         except Exception as e:
             print(input_file)
             raise e
 
-def run_c2f_floodmaps(input_file: str, dem_type: str):
+def run_c2f_floodmaps(input_file: str, dem_type: str, overwrite: bool = False):
     """
     Run the Curve2Flood floodmap generation.
     Parameters
@@ -896,13 +854,15 @@ def run_c2f_floodmaps(input_file: str, dem_type: str):
         Path to the Curve2Flood floodmap input text file.
     dem_type : str
         DEM type identifier used to construct output paths.
+    overwrite : bool, optional  
+        If True, forces re-execution even if output files already exist.
     """
     out_dir = _dir(input_file, 2)
 
     vdt = os.path.join(out_dir, 'vdts', f'vdt={dem_type}.parquet')
     floodmap = os.path.join(out_dir, 'floodmaps', f'dem={dem_type}', os.path.basename(input_file).replace('inputs=', '').replace('.txt', '.tif'))
 
-    if not opens_right(floodmap) and os.path.exists(vdt):
+    if (not opens_right(floodmap) or overwrite) and os.path.exists(vdt) :
         try:
             Curve2Flood_MainFunction(input_file, quiet=True, flood_vdt_cells=False)
         except Exception as e:
@@ -1166,7 +1126,7 @@ def unbuffer_remove(floodmaps: list[str], dem_type: str, buffer_distance: float,
 #     out_ds.WriteArray(majority_data)
 #     out_ds.FlushCache()
 
-def majority_vote_all_return_periods(floodmap_files: list[str]):
+def majority_vote_all_return_periods(floodmap_files: list[str], overwrite: bool = False):
     """
     Compute a majority-vote composite flood map from multiple return-period raster files and save
     the result as a Cloud Optimized GeoTIFF named "majority_vote_all_return_periods.tif" in the
@@ -1183,22 +1143,11 @@ def majority_vote_all_return_periods(floodmap_files: list[str]):
     ----------
     floodmap_files (list[str]):
         Ordered list of filepaths to raster return-period flood maps to be combined.
-
-    Returns:
-    -------
-        None
-
-    Side effects:
-    -----------
-    - Writes a file named "majority_vote_all_return_periods.tif" to the directory returned by
-        _dir(floodmap_files[0], 2).
-    - When a single input is provided, the input is copied to the output location as a COG.
-    - When multiple inputs are provided, intermediate in-memory datasets are created and then
-        the final aggregated raster is written as a COG.
-    - The output raster has datatype uint8 and a nodata value of 0.
+    overwrite (bool, optional):
+        If True, forces re-computation even if the output file already exists and opens right.
     """
     output_file = os.path.join(_dir(floodmap_files[0], 2), 'majority_vote_all_return_periods.tif')
-    if opens_right(output_file):
+    if opens_right(output_file) and not overwrite:
         return
     
     if len(floodmap_files) == 1:
