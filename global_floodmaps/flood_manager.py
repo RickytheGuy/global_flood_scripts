@@ -11,11 +11,11 @@ from .parallel_functions import (
     buffer_dem, run_arc, rasterize_streams, warp_land_use, _convert_process_count,
     start_unthrottled_pbar, download_flows, prepare_water_mask, prepare_inputs, 
     start_throttled_pbar, run_c2f_bathymetry, run_c2f_floodmaps, unbuffer_remove,
-    majority_vote_all_return_periods
+    majority_vote_all_return_periods, download_tilezen_in_area
 )
 
 from .utility_functions import (
-    filter_files_in_extent_by_lat_lon_dirs, get_dem_in_extent
+    filter_files_in_extent_by_lat_lon_dirs, get_dem_in_extent, is_tile_in_valid_tiles
 )
 
 
@@ -39,6 +39,7 @@ class FloodManager:
                  arc_args: dict = {},
                  c2f_bathymetry_args: dict = {},
                  c2f_floodmap_args: dict = {},
+                 overwrite_majority_maps: bool = False,
                  overwrite_floodmaps: bool = False,
                  overwrite_burned_dems: bool = False,
                  overwrite_vdts: bool = False,
@@ -124,6 +125,7 @@ class FloodManager:
         self.c2f_bathymetry_args = c2f_bathymetry_args
         self.c2f_floodmap_args = c2f_floodmap_args
 
+        self.overwrite_majority_maps = overwrite_majority_maps
         self.overwrite_floodmaps = overwrite_floodmaps
         self.overwrite_burned_dems = overwrite_burned_dems
         self.overwrite_vdts = overwrite_vdts
@@ -131,7 +133,7 @@ class FloodManager:
         self.overwrite_landuse = overwrite_landuse
         self.overwrite_buffered_dems = overwrite_buffered_dems
 
-    def run_one_dem_type(self, ex: ProcessPoolExecutor, dem_type: str):
+    def _run_one_dem_type(self, ex: ProcessPoolExecutor, dem_type: str):
         original_dems = glob.glob(os.path.join(self.dem_dirs[self.dem_names.index(dem_type)], '*.tif'), recursive=True)
         og_dems_filtered = get_dem_in_extent(self.bbox[0], self.bbox[1], self.bbox[2], self.bbox[3], original_dems, dem_type)
         buffered_dems = []
@@ -195,18 +197,18 @@ class FloodManager:
         start_throttled_pbar(ex, run_c2f_floodmaps, f"Creating floodmaps for {dem_type}", 
                                inputs, limit, dem_type=dem_type, overwrite=self.overwrite_floodmaps)
         
-        floodmap_dirs = glob.glob(os.path.join(self.output_dir, '*', '*', f'floodmaps={dem_type}'))
+        floodmap_dirs = glob.glob(os.path.join(self.output_dir, '*', '*', f'floodmaps', f'dem={dem_type}'))
         floodmap_dirs = filter_files_in_extent_by_lat_lon_dirs(self.bbox[0], self.bbox[1], self.bbox[2], self.bbox[3], floodmap_dirs)
         floodmap_groups = [glob.glob(os.path.join(floodmap_dir, '*.tif')) for floodmap_dir in floodmap_dirs]
         start_unthrottled_pbar(ex, unbuffer_remove, f"Unbuffering floodmaps for {dem_type}", 
                                floodmap_groups, dem_type=dem_type, buffer_distance=self.buffer_distance, oceans_pq=self.oceans_pq)
 
-    def run_all(self):
+    def run_all(self) -> 'FloodManager':
         run_all_rps_majority = set(self.rps) == {2, 5, 10, 25, 50, 100}
         with ProcessPoolExecutor(os.cpu_count()) as ex, tqdm.tqdm(total=len(self.dem_names)+int(run_all_rps_majority)) as pbar:
             for dem_type in self.dem_names:
                 pbar.set_description(f"Processing DEM type: {dem_type}")
-                self.run_one_dem_type(ex, dem_type)
+                self._run_one_dem_type(ex, dem_type)
                 pbar.update(1)
 
             if run_all_rps_majority:
@@ -219,9 +221,27 @@ class FloodManager:
                             cluster.append(rp_tif)
                     fmaps.append(cluster)
 
-                start_unthrottled_pbar(ex, majority_vote_all_return_periods, "Majority voting floodmaps across DEM types", fmaps, overwrite=self.overwrite_floodmaps)
+                start_unthrottled_pbar(ex, majority_vote_all_return_periods, "Majority voting floodmaps across DEM types", fmaps, overwrite=self.overwrite_majority_maps)
                 pbar.update(1)
-            
 
+        return self
 
+    def download_tilezen(self, output_dir: str, z_level: int = 12, overwrite: bool = False) -> 'FloodManager':
+        minx, miny, maxx, maxy = self.bbox
+        os.makedirs(output_dir, exist_ok=True)
 
+        args = []
+        for x in range(minx, maxx):
+            for y in range(miny, maxy):
+                if is_tile_in_valid_tiles(x, y, self.valid_tiles):
+                    args.append((x, y, x + 1, y + 1))
+
+        if not args:
+            print("No Tilezen tiles to download in the specified bounding box.")
+            return self
+
+        with ProcessPoolExecutor(min((os.cpu_count() * 2) - 4, len(args))) as ex:
+            start_unthrottled_pbar(ex, download_tilezen_in_area, f"Downloading Tilezen DEMs", args, output_dir=output_dir,
+                                   overwrite=overwrite, z=z_level)
+
+        return self

@@ -3,7 +3,7 @@ from global_floodmaps import FloodManager
 
 
 if __name__ == "__main__":
-    bbox = [-123, 37, -122, 38]
+    bbox = [-121, 39, -120, 40]
 
     dem_dirs = [
         r"C:\Users\lrr43\Documents\fabdems",
@@ -18,7 +18,8 @@ if __name__ == "__main__":
     with open(r"C:\Users\lrr43\Documents\worldmaps\stream_bounds.json", 'r') as f:
         stream_bounds = json.load(f)
 
-    FloodManager(
+    (
+        FloodManager(
         dem_dirs=dem_dirs,
         dem_names=dem_names,
         output_dir=output_dir,
@@ -28,7 +29,12 @@ if __name__ == "__main__":
         bbox=bbox,
         rps=[2, 5, 10, 25, 50, 100],
         valid_tiles_file=tiles_file,
-        # overwrite_floodmaps=True,
+        # overwrite_majority_maps=True
+        overwrite_floodmaps=True,
         # overwrite_burned_dems=True,
-        # overwrite_vdts=True
-    ).run_all()
+        # overwrite_vdts=True,
+        # overwrite_buffered_dems=True
+        )
+        # .download_tilezen(r"C:\Users\lrr43\Documents\tilezen", overwrite=True)
+        .run_all()
+    )

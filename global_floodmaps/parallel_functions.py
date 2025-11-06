@@ -17,7 +17,7 @@ from curve2flood import Curve2Flood_MainFunction
 from .utility_functions import (
     opens_right, get_dataset_info, convert_gt_to_bbox, is_tile_in_valid_tiles, 
     get_dem_in_extent, dem_to_dir, _dir, clean_stream_raster, get_linknos,
-    no_leave_pbar
+    no_leave_pbar, lat_to_y, lon_to_x
 )
 
 from ._constants import ESA_TILES_FILE, STORAGE_OPTIONS
@@ -1070,6 +1070,12 @@ def unbuffer_remove(floodmaps: list[str], dem_type: str, buffer_distance: float,
         if oceans_array is None:
             oceans_array = get_oceans_raster(oceans_pq, (minx, miny, maxx, maxy), width, height, gt, proj)
 
+        land_use = os.path.join(_dir(floodmap, 3), f'inputs={dem_type}', 'land_use.tif')
+        lu_ds: gdal.Dataset = gdal.Translate('', land_use, options=gdal.TranslateOptions(format='MEM', projWin=(minx, maxy, maxx, miny), width=width, height=height))
+        lu_array: np.ndarray = lu_ds.ReadAsArray()
+        lu_ds = None
+        correct_size[lu_array == 80] = 100 
+
         correct_size[oceans_array == 1] = 0
 
         # Create a new MEM dataset to hold the modified array
@@ -1190,5 +1196,32 @@ def majority_vote_all_return_periods(floodmap_files: list[str], overwrite: bool 
 
     gdal.GetDriverByName('COG').CreateCopy(output_file, ds, options=['COMPRESS=ZSTD', 'PREDICTOR=2'])
 
+def download_tilezen_in_area(bbox: list[int], output_dir: str, overwrite: bool = False, z: int = 12):
+    minx, miny, maxx, maxy = bbox
+    out_file = os.path.join(output_dir, f"tilezen_{minx}_{miny}.tif")
+    if not overwrite and opens_right(out_file):
+        return
+    
+    _minx, _maxy = lon_to_x(minx, z), lat_to_y(miny, z)
+    _maxx, _miny = lon_to_x(maxx, z), lat_to_y(maxy, z)
 
+    tiles = []
+    for x in range(_minx-1, _maxx + 2):
+        for y in range(_miny-1, _maxy + 2):
+            tile_url = f"/vsis3/elevation-tiles-prod/geotiff/{z}/{x}/{y}.tif"
+            tiles.append(tile_url)
 
+    options = gdal.WarpOptions(
+        format='GTiff',
+        outputBounds=[minx, miny, maxx, maxy],
+        outputBoundsSRS='EPSG:4326',
+        dstSRS='EPSG:4326',
+        outputType=gdal.GDT_Int16 if z <= 12 else gdal.GDT_Float32,
+        creationOptions=["COMPRESS=DEFLATE", f'PREDICTOR={2 if z <=12 else 3}'],
+        multithread=True,
+    )
+    gdal.Warp(
+        out_file,
+        tiles,
+        options=options
+    )

@@ -9,9 +9,10 @@ import numpy as np
 from osgeo import gdal
 
 gdal.UseExceptions()
+os.environ["AWS_NO_SIGN_REQUEST"] = "YES"
+os.environ["AWS_S3_ENDPOINT"] = "s3.amazonaws.com"
 
 no_leave_pbar = partial(tqdm.tqdm, leave=False, position=1)
-start_pbar = list
 
 def opens_right(path: str, read: bool = False) -> bool:
     if not os.path.exists(path):
@@ -259,3 +260,9 @@ def convert_area_to_single_vrt(bbox: list[float], all_files: list[str], output_f
     files = _get_files_helper(bbox, all_files)
 
     gdal.BuildVRT(output_file, files, options=gdal.BuildVRTOptions(srcNodata=255))
+
+def lon_to_x(lon: float, z: int = 14) -> int:
+    return round((lon + 180) * (2 ** z) / 360)
+
+def lat_to_y(lat: float, z: int = 14) -> int:
+    return round((1 - (np.log(np.tan(np.radians(lat)) + (1 / np.cos(np.radians(lat)))) / np.pi)) * (2 ** z) / 2)
