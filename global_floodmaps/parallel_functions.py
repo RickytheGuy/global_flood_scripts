@@ -1,15 +1,20 @@
 import os
 import glob
+import tempfile
+from math import floor
 from functools import partial
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
 import psutil
+import shutil
 import numpy as np
 import xarray as xr
 import pandas as pd
 import geopandas as gpd
+import asf_search as asf
+from remotezip import RemoteZip
 from osgeo import gdal, ogr, osr
-from shapely.geometry import box
+from shapely.geometry import box, Polygon
 
 from arc import Arc
 from curve2flood import Curve2Flood_MainFunction
@@ -1187,3 +1192,78 @@ def download_tilezen_in_area(bbox: list[int], output_dir: str, overwrite: bool =
         tiles,
         options=options
     )
+
+def download_alos_in_area(bbox: list[int], output_dir: str, overwrite: bool = False):
+    bbox: Polygon = box(*bbox)
+    x, y = floor(bbox.bounds[0]), floor(bbox.bounds[1])
+    tile_name = f'alos_{x}_{y}.tif'
+    out_file = os.path.join(output_dir, tile_name)
+    if not overwrite and opens_right(out_file):
+        return
+    
+    results: list[asf.Products.ALOSProduct] = asf.geo_search(
+        platform='ALOS',
+        instrument='PALSAR',
+        beamMode='FBS',
+        intersectsWith=bbox.wkt,
+        processingLevel='RTC_HI_RES',
+    )
+
+    if not results:
+        return
+    
+    # Compute geometry
+    for result in results:
+        geom = Polygon(result.geometry['coordinates'][0])
+        result.area = geom.area
+        result.geom = geom
+
+    results_to_return: list[asf.Products.ALOSProduct] = []
+    while not bbox.is_empty and results and len(results_to_return) < 10: # If we don't limit this, then for areas that have no results all results will get added.
+        # First, find the result with the most area in the bbox
+        results.sort(key=lambda x: x.geom.intersection(bbox).area, reverse=True)
+        # Remove the area of the first from the bbox
+        first_geom: Polygon = results[0].geom
+        bbox = bbox.difference(first_geom)
+        results_to_return.append(results.pop(0))
+
+    temp_dir = tempfile.mkdtemp()  # Just to ensure temp dir root exists
+    files = []
+    session = asf.ASFSession()
+    for result in results_to_return:
+        rz: RemoteZip = asf.remotezip(result.properties['url'], session)
+        for f in rz.filelist:
+            if f.filename.endswith('.dem.tif') and not os.path.exists(os.path.join(temp_dir, f.filename)):
+                    file = os.path.join(temp_dir, f.filename.split('/')[-1])
+                    with rz.open(f.filename) as dem_file, open(file, 'wb') as of:
+                        shutil.copyfileobj(dem_file, of)
+                        files.append(file)
+
+    for f in files:
+        warp_to_epsg(f)
+
+    options = gdal.WarpOptions(
+        format='GTiff',
+        outputBounds=[x, y, x + 1, y + 1],
+        outputBoundsSRS='EPSG:4326',
+        dstSRS='EPSG:4326',
+        resampleAlg='bilinear',
+        creationOptions=["COMPRESS=DEFLATE", 'PREDICTOR=2'],
+    )
+    ds = gdal.Warp(out_file, files, options=options)
+    ds = None
+
+    shutil.rmtree(temp_dir)
+
+
+def warp_to_epsg(dem: str):
+    out_file = dem.replace('.dem.tif', '_epsg4326.tif')
+    options = gdal.WarpOptions(
+        format='GTiff',
+        dstSRS='EPSG:4326',
+        multithread=True,
+        creationOptions=["COMPRESS=DEFLATE", 'PREDICTOR=2'],
+    )
+    gdal.Warp(out_file, dem, options=options)
+    os.remove(dem)
+    shutil.move(out_file, dem)  # Replace the original DEM with the reprojected one

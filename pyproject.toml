@@ -7,10 +7,12 @@ name = "global-floodmaps"
 description = "A Python package for generating global flood maps using an ensemble of DEM datasets."
 dynamic = ["version"]
 dependencies = [
+    "asf-search",
     "geopandas",
     "gdal",
     "psutil",
     "shapely",
+    "shutil",
     "tqdm",
     "xarray",
     "zarr"
