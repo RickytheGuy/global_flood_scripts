@@ -613,6 +613,9 @@ def prepare_inputs(dem: str,
                    mannings_table: str, 
                    rps: list[int] = [],
                    forecast_date: str = "",
+                   overwrite_arc: bool = False,
+                   overwrite_c2f_bathymetry: bool = False,
+                   overwrite_c2f_floodmap: bool = False,
                    arc_args: dict = {}, 
                    c2f_bathymetry_args: dict = {}, 
                    c2f_floodmap_args: dict = {}):
@@ -699,35 +702,35 @@ def prepare_inputs(dem: str,
     # Use empirical equation to determine x-section distance
     max_q = pd.read_csv(bmf, usecols=['max'], na_filter=False).values.max() # This is the fastest way to get the maximum value
     x_sect_dist = int(min(7500, (5e7 / max_q) + 4000 + (0.0001 * max_q)) / 2) # Divided by two, because this eq is based on top width, and x_sect_dist = 0.5 * tw
+    if not opens_right(main_input_file) or overwrite_arc:
+        with open(main_input_file, 'w') as f:
+            f.write("# Input files - Required\n")
+            f.write(f"DEM_File\t{dem}\n")
+            f.write(f"Stream_File\t{stream_file}\n")
+            f.write(f"LU_Raster_SameRes\t{land_use}\n")
+            f.write(f"LU_Manning_n\t{mannings_table}\n")
+            f.write(f"Flow_File\t{bmf}\n")
+            f.write(f"Degree_Manip\t{arc_args.get('Degree_Manip', 6.5)}\n")
+            f.write(f"Degree_Interval\t{arc_args.get('Degree_Interval', 1)}\n")
+            f.write(f"Low_Spot_Range\t{arc_args.get('Low_Spot_Range', 2 if dem_type == 'fabdem' else 4)}\n")
+            f.write(f"Gen_Slope_Dist\t{arc_args.get('Gen_Slope_Dist', 10 if dem_type == "fabdem" else 20)}\n")
+            f.write(f"Gen_Dir_Dist\t{arc_args.get('Gen_Dir_Dist', 10 if dem_type == "fabdem" else 20)}\n")
+            f.write(f"X_Section_Dist\t{x_sect_dist}\n")
 
-    with open(main_input_file, 'w') as f:
-        f.write("# Input files - Required\n")
-        f.write(f"DEM_File\t{dem}\n")
-        f.write(f"Stream_File\t{stream_file}\n")
-        f.write(f"LU_Raster_SameRes\t{land_use}\n")
-        f.write(f"LU_Manning_n\t{mannings_table}\n")
-        f.write(f"Flow_File\t{bmf}\n")
-        f.write(f"Degree_Manip\t{arc_args.get('Degree_Manip', 6.5)}\n")
-        f.write(f"Degree_Interval\t{arc_args.get('Degree_Interval', 1)}\n")
-        f.write(f"Low_Spot_Range\t{arc_args.get('Low_Spot_Range', 2 if dem_type == 'fabdem' else 4)}\n")
-        f.write(f"Gen_Slope_Dist\t{arc_args.get('Gen_Slope_Dist', 10 if dem_type == "fabdem" else 20)}\n")
-        f.write(f"Gen_Dir_Dist\t{arc_args.get('Gen_Dir_Dist', 10 if dem_type == "fabdem" else 20)}\n")
-        f.write(f"X_Section_Dist\t{x_sect_dist}\n")
+            f.write("\n# Output files - Required\n")
+            f.write(f"VDT_Database_NumIterations\t{arc_args.get('VDT_Database_NumIterations', 15)}\n")
+            f.write(f"Print_VDT_Database\t{vdt}\n")
 
-        f.write("\n# Output files - Required\n")
-        f.write(f"VDT_Database_NumIterations\t{arc_args.get('VDT_Database_NumIterations', 15)}\n")
-        f.write(f"Print_VDT_Database\t{vdt}\n")
+            f.write("\n# Parameters - Required\n")
+            f.write(f"Flow_File_ID\triver_id\n")
+            f.write(f"Flow_File_BF\tbaseflow\n")
+            f.write(f"Flow_File_QMax\tmax\n")
+            f.write(f"Spatial_Units\tdeg\n")
 
-        f.write("\n# Parameters - Required\n")
-        f.write(f"Flow_File_ID\triver_id\n")
-        f.write(f"Flow_File_BF\tbaseflow\n")
-        f.write(f"Flow_File_QMax\tmax\n")
-        f.write(f"Spatial_Units\tdeg\n")
-
-        f.write("\n# ARC Bathymetry\n")
-        f.write(f"FindBanksBasedOnLandCover\t{arc_args.get('FindBanksBasedOnLandCover', True)}\n")
-        f.write(f"AROutBATHY\t{bathy}\n")
-        f.write(f"BATHY_Out_File\t{bathy}\n")
+            f.write("\n# ARC Bathymetry\n")
+            f.write(f"FindBanksBasedOnLandCover\t{arc_args.get('FindBanksBasedOnLandCover', True)}\n")
+            f.write(f"AROutBATHY\t{bathy}\n")
+            f.write(f"BATHY_Out_File\t{bathy}\n")
     
     bathy_dem_dir = os.path.join(out_dir, 'burned_dems')
     os.makedirs(bathy_dem_dir, exist_ok=True)
@@ -736,6 +739,7 @@ def prepare_inputs(dem: str,
 
     # Use an empirical equation to get max plausible top width
     max_tw = round(max(2000 * (max_q ** 0.15), 1000), 1)
+    max_tw_bankfull = max_tw / 4
 
     burned_dem = os.path.join(bathy_dem_dir, f'dem_burned={dem_type}.tif')
     main_input_file = os.path.join(inputs_dir, f'inputs=burned.txt')
@@ -743,7 +747,7 @@ def prepare_inputs(dem: str,
     bf_file = os.path.join(out_dir, 'flow_files', 'baseflow.csv')
     water_mask = os.path.join(inputs_dir, 'water_mask.tif')
 
-    if not opens_right(burned_dem):
+    if not opens_right(burned_dem) or overwrite_c2f_bathymetry:
         with open(main_input_file, 'w') as f:
             f.write("# Main input file for ARC and Curve2Flood\n\n")
 
@@ -762,7 +766,7 @@ def prepare_inputs(dem: str,
             f.write(f"FSOutBATHY\t{burned_dem}\n")
             f.write(f"OutFLD\t{floodmap}\n")
 
-            f.write(f"TopWidthPlausibleLimit\t{max_tw}\n")
+            f.write(f"TopWidthPlausibleLimit\t{max_tw_bankfull}\n")
             f.write(f"TW_MultFact\t{c2f_bathymetry_args.get('TW_MultFact', 1.5)}\n")
             f.write(f"Flood_WaterLC_and_STRM_Cells\tTrue\n")
     
@@ -778,7 +782,7 @@ def prepare_inputs(dem: str,
         floodmap = os.path.join(floodmaps_dir, f"{name}.tif")
         main_input_file = os.path.join(inputs_dir, f"inputs={name}.txt")
 
-        if not opens_right(floodmap):
+        if not opens_right(floodmap) or overwrite_c2f_floodmap:
             with open(main_input_file, 'w') as f:
                 f.write("# Main input file for ARC and Curve2Flood\n\n")
                 f.write("\n# Input files - Required\n")
@@ -840,7 +844,9 @@ def run_c2f_bathymetry(input_file: str, dem_type: str, overwrite: bool = False):
 
     if (not opens_right(burned_dem) or overwrite) and os.path.exists(vdt):
         try:
-            Curve2Flood_MainFunction(input_file, quiet=True)
+            Curve2Flood_MainFunction(input_file, 
+                                     quiet=True, 
+                                     bathymetry_creation_options=['COMPRESS=LERC_DEFLATE', f'PREDICTOR={3 if dem_type == "fabdem" else 2}', 'MAX_Z_ERROR=0.01', 'ZLEVEL=8', 'NUM_THREADS=ALL_CPUS'])
         except Exception as e:
             print(input_file)
             raise e
@@ -1092,50 +1098,10 @@ def unbuffer_remove(floodmaps: list[str], dem_type: str, buffer_distance: float,
         mem_ds = None
         u_ds = None
 
-# def majority_vote_multiple_bands(floodmap_files: list[str], output_file: str):
-#     if opens_right(output_file):
-#         return
-
-#     arrays = []
-#     gt = None
-#     proj = None
-#     width = None
-#     height = None
-#     for floodmap in sorted(floodmap_files, reverse=True):
-#         # Tilezen will be first, then fab, then alos
-#         if gt is None:
-#             ds: gdal.Dataset = gdal.Open(floodmap)
-#             gt = ds.GetGeoTransform()
-#             proj = ds.GetProjection()
-#             width = ds.RasterXSize
-#             height = ds.RasterYSize
-#         else:
-#             options = gdal.WarpOptions(format='MEM',
-#                                         outputBounds=(gt[0], gt[3] + height * gt[5], gt[0] + width * gt[1], gt[3]),
-#                                         outputBoundsSRS=proj,
-#                                         dstSRS=proj,
-#                                         width=width,
-#                                         height=height,
-#                                         resampleAlg='mode')
-#             ds: gdal.Dataset = gdal.Warp('', floodmap, options=options)
-
-#         arrays.append(ds.ReadAsArray() > 0)
-#         ds = None
-
-#     stacked_data = np.stack(arrays, axis=0)
-#     majority_data = np.where(np.sum(stacked_data, axis=0) >= (len(arrays) / 2), 1, 0).astype(np.uint8)
-
-#     out_ds: gdal.Dataset = gdal.GetDriverByName('GTiff').Create(output_file, majority_data.shape[1], majority_data.shape[0], len(arrays), gdal.GDT_Byte, options=['COMPRESS=ZSTD', 'PREDICTOR=2'])
-#     out_ds.SetGeoTransform(ds.GetGeoTransform())
-#     out_ds.SetProjection(ds.GetProjection())
-#     out_ds.GetRasterBand(1).SetNoDataValue(0)
-#     out_ds.WriteArray(majority_data)
-#     out_ds.FlushCache()
-
-def majority_vote_all_return_periods(floodmap_files: list[str], overwrite: bool = False):
+def majority_vote(floodmap_files: list[str], overwrite: bool = False):
     """
-    Compute a majority-vote composite flood map from multiple return-period raster files and save
-    the result as a Cloud Optimized GeoTIFF named "majority_vote_all_return_periods.tif" in the
+    Compute a majority-vote composite flood map from multiple \raster files and save
+    the result as a Cloud Optimized GeoTIFF, in the
     directory two levels above the first input file.
     The function:
     - Skips processing if the target output already "opens right" (as determined by opens_right()).
@@ -1148,11 +1114,11 @@ def majority_vote_all_return_periods(floodmap_files: list[str], overwrite: bool 
     Parameters:
     ----------
     floodmap_files (list[str]):
-        Ordered list of filepaths to raster return-period flood maps to be combined.
+        Ordered list of filepaths to raster flood maps to be combined.
     overwrite (bool, optional):
         If True, forces re-computation even if the output file already exists and opens right.
     """
-    output_file = os.path.join(_dir(floodmap_files[0], 2), 'majority_vote_all_return_periods.tif')
+    output_file = os.path.join(_dir(floodmap_files[0], 2), f'majority_vote_{os.path.basename(floodmap_files[0])}')
     if opens_right(output_file) and not overwrite:
         return
     
@@ -1171,17 +1137,13 @@ def majority_vote_all_return_periods(floodmap_files: list[str], overwrite: bool 
 
 
     for rps in floodmap_files[1:]:
-            options = gdal.WarpOptions(format='MEM',
-                               width=width,
-                                 height=height,
-                                 dstSRS=proj,)
-    
-            rp_ds: gdal.Dataset = gdal.Warp('', rps, options=options)
-            stacked_array.append(rp_ds.ReadAsArray())
+        options = gdal.WarpOptions(format='MEM', width=width, height=height, dstSRS=proj, resampleAlg='mode')
+        rp_ds: gdal.Dataset = gdal.Warp('', rps, options=options)
+        stacked_array.append(rp_ds.ReadAsArray())
 
     stacked_data = np.stack(stacked_array, axis=0)
     output_array = np.zeros((height, width), dtype=np.uint8)
-    for _class in np.linspace(0, 100, 7, dtype=np.uint8)[1:]:
+    for _class in np.unique(stacked_data)[1:]:
         class_mask = (stacked_data >= _class)
         votes = np.sum(class_mask, axis=0)
         majority_mask = votes > (len(stacked_array) / 2)

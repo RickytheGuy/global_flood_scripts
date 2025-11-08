@@ -11,7 +11,7 @@ from .parallel_functions import (
     buffer_dem, run_arc, rasterize_streams, warp_land_use, _convert_process_count,
     start_unthrottled_pbar, download_flows, prepare_water_mask, prepare_inputs, 
     start_throttled_pbar, run_c2f_bathymetry, run_c2f_floodmaps, unbuffer_remove,
-    majority_vote_all_return_periods, download_tilezen_in_area
+    majority_vote, download_tilezen_in_area
 )
 
 from .utility_functions import (
@@ -170,7 +170,9 @@ class FloodManager:
 
         start_unthrottled_pbar(ex, prepare_inputs, f"Preparing input files for {dem_type}", 
                                buffered_dems, dem_type=dem_type, mannings_table=self.mannings_table, 
-                               rps=self.rps, forecast_date=self.forecast_date, arc_args=self.arc_args, 
+                               rps=self.rps, forecast_date=self.forecast_date, overwrite_arc=self.overwrite_vdts,
+                               overwrite_c2f_bathymetry=self.overwrite_burned_dems,
+                               overwrite_c2f_floodmap=self.overwrite_floodmaps, arc_args=self.arc_args, 
                                c2f_bathymetry_args=self.c2f_bathymetry_args, 
                                c2f_floodmap_args=self.c2f_floodmap_args)
 
@@ -204,25 +206,36 @@ class FloodManager:
                                floodmap_groups, dem_type=dem_type, buffer_distance=self.buffer_distance, oceans_pq=self.oceans_pq)
 
     def run_all(self) -> 'FloodManager':
-        run_all_rps_majority = set(self.rps) == {2, 5, 10, 25, 50, 100}
-        with ProcessPoolExecutor(os.cpu_count()) as ex, tqdm.tqdm(total=len(self.dem_names)+int(run_all_rps_majority)) as pbar:
+        run_majority_rps = bool(self.rps)
+        with ProcessPoolExecutor(os.cpu_count()) as ex, tqdm.tqdm(total=len(self.dem_names)+int(run_majority_rps)+1) as pbar:
             for dem_type in self.dem_names:
                 pbar.set_description(f"Processing DEM type: {dem_type}")
                 self._run_one_dem_type(ex, dem_type)
                 pbar.update(1)
 
-            if run_all_rps_majority:
+            if run_majority_rps:
                 fmaps = []
                 for dir in glob.glob(os.path.join(self.output_dir, '*', '*', 'floodmaps')):
                     cluster = []
                     for dem_type in self.dem_names:
-                        rp_tif = os.path.join(dir, f"dem={dem_type}", 'flows_2,5,10,25,50,100.tif')
+                        rp_tif = os.path.join(dir, f"dem={dem_type}", f'flows_{",".join(map(str, self.rps))}.tif')
                         if  os.path.exists(rp_tif):
                             cluster.append(rp_tif)
                     fmaps.append(cluster)
 
-                start_unthrottled_pbar(ex, majority_vote_all_return_periods, "Majority voting floodmaps across DEM types", fmaps, overwrite=self.overwrite_majority_maps)
+                start_unthrottled_pbar(ex, majority_vote, "Majority voting floodmaps across DEM types", fmaps, overwrite=self.overwrite_majority_maps)
                 pbar.update(1)
+
+            fmaps = []
+            for dir in glob.glob(os.path.join(self.output_dir, '*', '*', 'floodmaps')):
+                cluster = []
+                for dem_type in self.dem_names:
+                    all_rps_tif = os.path.join(dir, f"dem={dem_type}", 'bankfull.tif')
+                    if  os.path.exists(all_rps_tif):
+                        cluster.append(all_rps_tif)
+                fmaps.append(cluster)
+            start_unthrottled_pbar(ex, majority_vote, "Majority voting bankfull floodmaps across DEM types", fmaps, overwrite=self.overwrite_majority_maps)
+            pbar.update(1)
 
         return self
 
