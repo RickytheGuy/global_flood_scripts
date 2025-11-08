@@ -5,6 +5,7 @@ from math import floor
 from functools import partial
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
+import boto3
 import psutil
 import shutil
 import numpy as np
@@ -22,7 +23,7 @@ from curve2flood import Curve2Flood_MainFunction
 from .utility_functions import (
     opens_right, get_dataset_info, convert_gt_to_bbox, is_tile_in_valid_tiles, 
     get_dem_in_extent, dem_to_dir, _dir, clean_stream_raster, get_linknos,
-    no_leave_pbar, lat_to_y, lon_to_x
+    no_leave_pbar, lat_to_y, lon_to_x, get_s3_fabdem_path
 )
 
 from ._constants import ESA_TILES_FILE, STORAGE_OPTIONS
@@ -1267,3 +1268,14 @@ def warp_to_epsg(dem: str):
     gdal.Warp(out_file, dem, options=options)
     os.remove(dem)
     shutil.move(out_file, dem)  # Replace the original DEM with the reprojected one
+
+def download_fabdem_tile(bbox: list[int], output_dir: str, overwrite: bool = False):
+    minx, miny, maxx, maxy = bbox
+    bucket, key = get_s3_fabdem_path(minx, miny)
+    s3_path = f"s3://{bucket}/{key}"
+    out_file = os.path.join(output_dir, os.path.basename(s3_path))
+    if not overwrite and opens_right(out_file):
+        return
+    
+    s3 = boto3.client('s3')
+    s3.download_file(bucket, key, out_file)

@@ -11,11 +11,12 @@ from .parallel_functions import (
     buffer_dem, run_arc, rasterize_streams, warp_land_use, _convert_process_count,
     start_unthrottled_pbar, download_flows, prepare_water_mask, prepare_inputs, 
     start_throttled_pbar, run_c2f_bathymetry, run_c2f_floodmaps, unbuffer_remove,
-    majority_vote, download_tilezen_in_area, download_alos_in_area
+    majority_vote, download_tilezen_in_area, download_alos_in_area, 
+    download_fabdem_tile
 )
 
 from .utility_functions import (
-    filter_files_in_extent_by_lat_lon_dirs, get_dem_in_extent, is_tile_in_valid_tiles
+    filter_files_in_extent_by_lat_lon_dirs, get_dem_in_extent, generate_bounding_args
 )
 
 
@@ -243,11 +244,7 @@ class FloodManager:
         minx, miny, maxx, maxy = self.bbox
         os.makedirs(output_dir, exist_ok=True)
 
-        args = []
-        for x in range(minx, maxx):
-            for y in range(miny, maxy):
-                if is_tile_in_valid_tiles(x, y, self.valid_tiles):
-                    args.append((x, y, x + 1, y + 1))
+        args = generate_bounding_args(minx, miny, maxx, maxy, self.valid_tiles)
 
         if not args:
             print("No Tilezen tiles to download in the specified bounding box.")
@@ -263,11 +260,7 @@ class FloodManager:
         minx, miny, maxx, maxy = self.bbox
         os.makedirs(output_dir, exist_ok=True)
 
-        args = []
-        for x in range(minx, maxx):
-            for y in range(miny, maxy):
-                if is_tile_in_valid_tiles(x, y, self.valid_tiles):
-                    args.append((x, y, x + 1, y + 1))
+        args = generate_bounding_args(minx, miny, maxx, maxy, self.valid_tiles)
 
         if not args:
             print("No ALOS tiles to download in the specified bounding box.")
@@ -280,6 +273,22 @@ class FloodManager:
 
         with ProcessPoolExecutor(min((os.cpu_count() * 2) - 4, len(args))) as ex:
             start_unthrottled_pbar(ex, download_alos_in_area, f"Downloading ALOS DEMs", args, output_dir=output_dir,
+                                   overwrite=overwrite)
+
+        return self
+    
+    def download_fabdem(self, output_dir: str, overwrite: bool = False) -> 'FloodManager':
+        minx, miny, maxx, maxy = self.bbox
+        os.makedirs(output_dir, exist_ok=True)
+
+        args = generate_bounding_args(minx, miny, maxx, maxy, self.valid_tiles)
+
+        if not args:
+            print("No FABDEM tiles to download in the specified bounding box.")
+            return self
+
+        with ProcessPoolExecutor(min((os.cpu_count() * 2) - 4, len(args))) as ex:
+            start_unthrottled_pbar(ex, download_fabdem_tile, f"Downloading FABDEM DEMs", args, output_dir=output_dir,
                                    overwrite=overwrite)
 
         return self

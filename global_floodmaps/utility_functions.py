@@ -1,6 +1,5 @@
 import os
 import re
-import glob
 from functools import partial
 
 import tqdm
@@ -266,3 +265,45 @@ def lon_to_x(lon: float, z: int = 14) -> int:
 
 def lat_to_y(lat: float, z: int = 14) -> int:
     return round((1 - (np.log(np.tan(np.radians(lat)) + (1 / np.cos(np.radians(lat)))) / np.pi)) * (2 ** z) / 2)
+
+def generate_bounding_args(minx: float,
+                           miny: float,
+                           maxx: float,
+                           maxy: float,
+                           valid_tiles: list[list[int]] = None) -> list[tuple[float, float, float, float]]:
+    args = []
+    for x in range(minx-1, maxx+1):
+        for y in range(miny-1, maxy+1):
+            if is_tile_in_valid_tiles(x, y, valid_tiles):
+                args.append((x, y, x + 1, y + 1))
+    return args
+
+def get_s3_fabdem_path(x, y):
+    # Determine 10° tile bounds
+    lat0 = int(y // 10 * 10)
+    lon0 = int(x // 10 * 10)
+
+    lat1 = lat0 + 10
+    lon1 = lon0 + 10
+
+    # Hemisphere prefixes
+    lat_prefix0 = "N" if lat0 >= 0 else "S"
+    lon_prefix0 = "E" if lon0 >= 0 else "W"
+    lat_prefix1 = "N" if lat1 >= 0 else "S"
+    lon_prefix1 = "E" if lon1 >= 0 else "W"
+
+    # Individual tile (1° tile assumed)
+    lat_tile = int(y)
+    lon_tile = int(x)
+    lat_prefix_tile = "N" if lat_tile >= 0 else "S"
+    lon_prefix_tile = "E" if lon_tile >= 0 else "W"
+
+    # Format with zero padding
+    def fmt_lat(val, prefix): return f"{prefix}{abs(val):02d}"
+    def fmt_lon(val, prefix): return f"{prefix}{abs(val):03d}"
+
+    folder = f"{fmt_lat(lat0, lat_prefix0)}{fmt_lon(lon0, lon_prefix0)}-" \
+             f"{fmt_lat(lat1, lat_prefix1)}{fmt_lon(lon1, lon_prefix1)}_FABDEM_V1-2"
+    filename = f"{fmt_lat(lat_tile, lat_prefix_tile)}{fmt_lon(lon_tile, lon_prefix_tile)}_FABDEM_V1-2.tif"
+
+    return 'global-floodmaps', f'dems/fabdem/{folder}/{filename}'
