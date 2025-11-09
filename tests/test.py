@@ -3,7 +3,7 @@ from global_floodmaps import FloodManager
 
 
 if __name__ == "__main__":
-    bbox = [-121, 39, -120, 40]
+    bbox = [-110, 37, -109, 38]
 
     dem_dirs = [
         r"C:\Users\lrr43\Documents\fabdems",
@@ -14,7 +14,6 @@ if __name__ == "__main__":
     output_dir = r"C:\Users\lrr43\Downloads\testing"
     landcover_directory = r"C:\Users\lrr43\Documents\lu"
     oceans_pq = r"C:\Users\lrr43\Documents\worldmaps\seas_buffered.parquet"
-    tiles_file = r"C:\Users\lrr43\Documents\tiles_in_geoglowsv2.parquet"
     with open(r"C:\Users\lrr43\Documents\worldmaps\stream_bounds.json", 'r') as f:
         stream_bounds = json.load(f)
 
@@ -28,13 +27,17 @@ if __name__ == "__main__":
         oceans_pq=oceans_pq,
         bbox=bbox,
         rps=[2, 5, 10, 25, 50, 100],
-        valid_tiles_file=tiles_file,
-        # overwrite_majority_maps=True
-        overwrite_floodmaps=True,
+        # overwrite_majority_maps=True,
+        # overwrite_floodmaps=True,
         # overwrite_burned_dems=True,
         # overwrite_vdts=True,
-        # overwrite_buffered_dems=True
+        # overwrite_buffered_dems=True,
+        # overwrite_landuse=True,
+        # overwrite_streams=True,
         )
         # .download_tilezen(r"C:\Users\lrr43\Documents\tilezen", overwrite=True)
-        .run_all()
+        # .download_alos(r"C:\Users\lrr43\Documents\alos_dems", overwrite=True)
+        # .download_fabdem(r"C:\Users\lrr43\Documents\fabdems", overwrite=True)
+        # .run_all()
+        .define_memory_usage('tilezen')
     )

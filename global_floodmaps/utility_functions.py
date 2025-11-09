@@ -270,12 +270,23 @@ def generate_bounding_args(minx: float,
                            miny: float,
                            maxx: float,
                            maxy: float,
-                           valid_tiles: list[list[int]] = None) -> list[tuple[float, float, float, float]]:
+                           valid_tiles: list[list[int]] = None,
+                           number_of_tiles: int = None,
+                           offset: int = 0) -> list[tuple[float, float, float, float]]:
     args = []
+    if number_of_tiles is None:
+        number_of_tiles = float('inf')
+    
+    start_offset = 0
     for x in range(minx-1, maxx+1):
         for y in range(miny-1, maxy+1):
-            if is_tile_in_valid_tiles(x, y, valid_tiles):
+            if start_offset < offset:
+                start_offset += 1
+            elif is_tile_in_valid_tiles(x, y, valid_tiles):
                 args.append((x, y, x + 1, y + 1))
+                if len(args) >= number_of_tiles:
+                    return args
+
     return args
 
 def get_s3_fabdem_path(x, y):

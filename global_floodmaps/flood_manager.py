@@ -32,6 +32,8 @@ class FloodManager:
                  stream_bounds: dict[str, tuple[float, float, float, float]],
                  oceans_pq: str,
                  bbox: tuple[float, float, float, float] = None,
+                 number_of_tiles: int = None,
+                 offset: int = 0,
                  mannings_table: str = None,
                  rps: list[int] = None,
                  forecast_date: str = None,
@@ -108,6 +110,10 @@ class FloodManager:
             self.bbox = (-180.0, -90.0, 180.0, 90.0)
         else:
             self.bbox = bbox
+
+        self.number_of_tiles = number_of_tiles 
+        self.offset = offset
+
         if mannings_table:
             self.mannings_table = mannings_table
         else:
@@ -201,6 +207,7 @@ class FloodManager:
             inputs.extend(glob.glob(os.path.join(self.output_dir, '*', '*', f'inputs={dem_type}', f'inputs={name}.txt'))) 
         inputs = filter_files_in_extent_by_lat_lon_dirs(self.bbox[0], self.bbox[1], self.bbox[2], self.bbox[3], inputs)
         limit = _get_num_processes({'fabdem': 4.76, 'alos': 7.8, 'tilezen': 4.97}.get(dem_type, os.cpu_count()))
+
         start_throttled_pbar(ex, run_c2f_floodmaps, f"Creating floodmaps for {dem_type}", 
                                inputs, limit, dem_type=dem_type, overwrite=self.overwrite_floodmaps)
         
@@ -249,7 +256,7 @@ class FloodManager:
         minx, miny, maxx, maxy = self.bbox
         os.makedirs(output_dir, exist_ok=True)
 
-        args = generate_bounding_args(minx, miny, maxx, maxy, self.valid_tiles)
+        args = generate_bounding_args(minx, miny, maxx, maxy, self.valid_tiles, self.number_of_tiles, self.offset)
 
         if not args:
             print("No Tilezen tiles to download in the specified bounding box.")
@@ -265,7 +272,7 @@ class FloodManager:
         minx, miny, maxx, maxy = self.bbox
         os.makedirs(output_dir, exist_ok=True)
 
-        args = generate_bounding_args(minx, miny, maxx, maxy, self.valid_tiles)
+        args = generate_bounding_args(minx, miny, maxx, maxy, self.valid_tiles, self.number_of_tiles, self.offset)
 
         if not args:
             print("No ALOS tiles to download in the specified bounding box.")
@@ -286,7 +293,7 @@ class FloodManager:
         minx, miny, maxx, maxy = self.bbox
         os.makedirs(output_dir, exist_ok=True)
 
-        args = generate_bounding_args(minx, miny, maxx, maxy, self.valid_tiles)
+        args = generate_bounding_args(minx, miny, maxx, maxy, self.valid_tiles, self.number_of_tiles, self.offset)
 
         if not args:
             print("No FABDEM tiles to download in the specified bounding box.")
