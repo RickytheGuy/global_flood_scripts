@@ -7,7 +7,7 @@ dependencies:
   - geopandas
   - gdal
   - pip
-  - python
+  - python=3.13
   - psutil
   - remotezip
   - s5cmd
