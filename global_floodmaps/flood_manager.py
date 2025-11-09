@@ -1,5 +1,6 @@
 import os
 import glob
+import subprocess
 from concurrent.futures import ProcessPoolExecutor
 
 import tqdm
@@ -407,4 +408,28 @@ class FloodManager:
                                    'oceans_pq': self.oceans_pq}),
                                  max_usage=True, retval=True)
         print(f"Estimated memory usage for unbuffering floodmaps of type {dem_type}: {(mem_usage/1024):.2f} GB")
+        return self
+    
+    def download_landcover(self, overwrite: bool = False) -> 'FloodManager':
+        result = subprocess.run([
+            "s5cmd", "--no-sign-request", "cp" if overwrite else "sync",
+            "s3://global-floodmaps/landcover/*",
+            self.landcover_directory
+        ], capture_output=True, text=True)
+
+        if result.returncode != 0:
+            print("Error downloading landcover data:")
+            print(result.stderr)
+
+    def download_streamlines(self, stream_dir: str, overwrite: bool = False) -> 'FloodManager':
+        result = subprocess.run([
+            "s5cmd", "--no-sign-request", "cp" if overwrite else "sync",
+            "s3://global-floodmaps/streamlines/*",
+            stream_dir
+        ], capture_output=True, text=True)
+
+        if result.returncode != 0:
+            print("Error downloading streamlines data:")
+            print(result.stderr) 
+
         return self

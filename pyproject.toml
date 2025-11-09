@@ -12,6 +12,7 @@ dependencies = [
     "geopandas",
     "gdal",
     "psutil",
+    "s5cmd",
     "shapely",
     "shutil",
     "tqdm",

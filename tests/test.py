@@ -25,8 +25,10 @@ if __name__ == "__main__":
         landcover_directory=landcover_directory,
         stream_bounds=stream_bounds,
         oceans_pq=oceans_pq,
-        bbox=bbox,
+        # bbox=bbox,
         rps=[2, 5, 10, 25, 50, 100],
+        number_of_tiles=1,
+        offset=5,
         # overwrite_majority_maps=True,
         # overwrite_floodmaps=True,
         # overwrite_burned_dems=True,
@@ -38,6 +40,7 @@ if __name__ == "__main__":
         # .download_tilezen(r"C:\Users\lrr43\Documents\tilezen", overwrite=True)
         # .download_alos(r"C:\Users\lrr43\Documents\alos_dems", overwrite=True)
         # .download_fabdem(r"C:\Users\lrr43\Documents\fabdems", overwrite=True)
+        .download_landcover()
         # .run_all()
-        .define_memory_usage('tilezen')
+        # .define_memory_usage('tilezen')
     )
