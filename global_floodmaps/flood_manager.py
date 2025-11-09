@@ -169,7 +169,7 @@ class FloodManager:
             if buffered_dem:
                 buffered_dems.append(buffered_dem)
 
-        limit = _get_num_processes({'fabdem': 4.05, 'alos': 4.89, 'tilezen': 4.31}.get(dem_type, os.cpu_count()))
+        limit = _get_num_processes({'fabdem': 8, 'alos': 9, 'tilezen': 8}.get(dem_type, os.cpu_count()))
         start_throttled_pbar(ex, rasterize_streams, f"Rasterizing streams for {dem_type}", 
                              buffered_dems, limit, dem_type=dem_type, 
                              bounds=self.stream_bounds, overwrite=self.overwrite_streams)

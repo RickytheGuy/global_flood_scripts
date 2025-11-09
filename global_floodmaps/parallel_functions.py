@@ -170,9 +170,6 @@ def throttled_map(executor: ProcessPoolExecutor, func, items: list, limit: int =
                 new_future = executor.submit(func, items[next_idx])
                 futures[new_future] = items[next_idx]
                 next_idx += 1
-                
-            if future in futures:
-                del futures[future]
 
 def start_unthrottled_pbar(ex, func, desc: str, items: list, **func_kwargs):
     return list(no_leave_pbar(unthrottled_map(ex, partial(func, **func_kwargs), items), total=len(items), desc=desc))
@@ -317,7 +314,7 @@ def rasterize_streams(dem: str,
     """
     stream_file = os.path.join(_dir(dem, 2), f'inputs={dem_type}', 'streams.tif')
 
-    if opens_right(stream_file) and not overwrite:
+    if opens_right(stream_file) and not overwrite and gdal.Open(stream_file).ReadAsArray().any():
         return
     
     width, height, gt, proj = get_dataset_info(dem)
