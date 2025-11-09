@@ -9,6 +9,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 
 import boto3
 import psutil
+import botocore
 import numpy as np
 import xarray as xr
 import pandas as pd
@@ -1295,5 +1296,9 @@ def download_fabdem_tile(bbox: list[int], output_dir: str, overwrite: bool = Fal
         return out_file
     
     s3 = boto3.client('s3')
-    s3.download_file(bucket, key, out_file)
+    try:
+        s3.download_file(bucket, key, out_file)
+    except botocore.exceptions.ClientError:
+        return None
+    
     return out_file

@@ -316,7 +316,7 @@ class FloodManager:
             dems = start_unthrottled_pbar(ex, download_fabdem_tile, f"Downloading FABDEM DEMs", args, output_dir=output_dir,
                                    overwrite=overwrite)
 
-        self.og_dem_dict['fabdem'] = dems
+        self.og_dem_dict['fabdem'] = [d for d in dems if d]
 
         return self
 
