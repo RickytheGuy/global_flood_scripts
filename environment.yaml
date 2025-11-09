@@ -5,6 +5,7 @@ channels:
 dependencies:
   - boto3
   - geopandas
+  - git
   - gdal
   - libgdal-arrow-parquet
   - pip
