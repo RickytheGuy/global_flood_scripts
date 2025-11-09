@@ -18,6 +18,8 @@ from .utility_functions import (
     filter_files_in_extent_by_lat_lon_dirs, get_dem_in_extent, generate_bounding_args
 )
 
+from ._constants import DEFAULT_TILES_FILE
+
 
 gdal.UseExceptions()
 
@@ -33,7 +35,7 @@ class FloodManager:
                  mannings_table: str = None,
                  rps: list[int] = None,
                  forecast_date: str = None,
-                 valid_tiles_file: str = None,
+                 valid_tiles_file: str = DEFAULT_TILES_FILE,
                  buffer_distance: float = 0.1,
                  buffer_dems_as_vrt: bool = True, 
                  arc_args: dict = {},
