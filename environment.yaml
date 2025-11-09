@@ -17,3 +17,5 @@ dependencies:
   - zarr
   - pip:
     - asf-search
+    - git+https://github.com/MikeFHS/automated-rating-curve.git
+    - git+https://github.com/RickytheGuy/curve2flood.git
