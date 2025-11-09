@@ -11,7 +11,7 @@ if __name__ == "__main__":
         r"C:\Users\lrr43\Documents\tilezen"
     ]
     dem_names = ['fabdem', 'alos', 'tilezen']
-    output_dir = r"C:\Users\lrr43\Downloads\testing"
+    output_dir = r"C:\Users\lrr43\Documents\global_flood_maps"
     landcover_directory = r"C:\Users\lrr43\Documents\lu"
     oceans_pq = r"C:\Users\lrr43\Documents\worldmaps\seas_buffered.parquet"
     streamlines_directory = r"C:\Users\lrr43\Documents\worldmaps\streamlines"
@@ -41,5 +41,6 @@ if __name__ == "__main__":
         .download_fabdem(r"C:\Users\lrr43\Documents\fabdems")
         .download_landcover()
         .download_streamlines()
+        .download_oceans_pq(oceans_pq)
         .run_all()
     )

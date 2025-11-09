@@ -415,25 +415,45 @@ class FloodManager:
         return self
     
     def download_landcover(self, overwrite: bool = False) -> 'FloodManager':
-        result = subprocess.run([
-            "s5cmd", "--no-sign-request", "cp" if overwrite else "sync",
-            "s3://global-floodmaps/landcover/*",
-            self.landcover_directory
-        ], capture_output=True, text=True)
+        command = ["s5cmd", "--no-sign-request", "cp" if overwrite else "sync"]
+        if not overwrite:
+            command.append("--size-only")
+        command.extend(["s3://global-floodmaps/landcover/", self.landcover_directory])
+
+        result = subprocess.run(command, capture_output=True, text=True)
 
         if result.returncode != 0:
             print("Error downloading landcover data:")
             print(result.stderr)
 
+        return self
+
     def download_streamlines(self, overwrite: bool = False) -> 'FloodManager':
-        result = subprocess.run([
-            "s5cmd", "--no-sign-request", "cp" if overwrite else "sync",
-            "s3://global-floodmaps/streamlines/*",
-            self.streamlines_directory
-        ], capture_output=True, text=True)
+        command = ["s5cmd", "--no-sign-request", "cp" if overwrite else "sync"]
+        if not overwrite:
+            command.append("--size-only")
+        command.extend(["s3://global-floodmaps/streamlines/", self.streamlines_directory])
+
+        result = subprocess.run(command, capture_output=True, text=True)
 
         if result.returncode != 0:
             print("Error downloading streamlines data:")
+            print(result.stderr) 
+
+        return self
+    
+    def download_oceans_pq(self, output_path: str, overwrite: bool = False) -> 'FloodManager':
+        if not overwrite and os.path.exists(output_path):
+            return self 
+        
+        result = subprocess.run([
+            "s5cmd", "--no-sign-request", "cp",
+            "s3://global-floodmaps/configs/seas_buffered.parquet",
+            output_path
+        ], capture_output=True, text=True)
+
+        if result.returncode != 0:
+            print("Error downloading oceans parquet data:")
             print(result.stderr) 
 
         return self
