@@ -1,0 +1,15 @@
+name: flood
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - asf-search
+  - boto3
+  - geopandas
+  - gdal
+  - psutil
+  - s5cmd
+  - shapely
+  - tqdm
+  - xarray
+  - zarr`

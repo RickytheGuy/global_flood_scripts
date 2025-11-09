@@ -6,18 +6,18 @@ build-backend = "setuptools.build_meta"
 name = "global-floodmaps"
 description = "A Python package for generating global flood maps using an ensemble of DEM datasets."
 dynamic = ["version"]
-dependencies = [
-    "asf-search",
-    "boto3",
-    "geopandas",
-    "gdal",
-    "psutil",
-    "s5cmd",
-    "shapely",
-    "tqdm",
-    "xarray",
-    "zarr"
-]
+# dependencies = [
+#     "asf-search",
+#     "boto3",
+#     "geopandas",
+#     "gdal",
+#     "psutil",
+#     "s5cmd",
+#     "shapely",
+#     "tqdm",
+#     "xarray",
+#     "zarr"
+# ]
 authors = [
     {name = "L. Ricky Rosas", email = "lrr43@byu.edu"}
 ]
