@@ -3,13 +3,16 @@ channels:
   - conda-forge
   - defaults
 dependencies:
-  - asf-search
   - boto3
   - geopandas
   - gdal
+  - pip
+  - python
   - psutil
   - s5cmd
   - shapely
   - tqdm
   - xarray
-  - zarr`
+  - zarr
+  - pip:
+    - asf-search
