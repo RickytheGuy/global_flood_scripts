@@ -1,3 +1,4 @@
+import json
 import os
 import glob
 import subprocess
@@ -19,7 +20,7 @@ from .utility_functions import (
     filter_files_in_extent_by_lat_lon_dirs, get_dem_in_extent, generate_bounding_args
 )
 
-from ._constants import DEFAULT_TILES_FILE
+from ._constants import DEFAULT_TILES_FILE, STREAM_BOUNDS_FILE
 
 
 gdal.UseExceptions()
@@ -30,7 +31,7 @@ class FloodManager:
                  dem_names: list[str],
                  output_dir: str,
                  landcover_directory: str,
-                 stream_bounds: dict[str, tuple[float, float, float, float]],
+                 streamlines_directory: str,
                  oceans_pq: str,
                  bbox: tuple[float, float, float, float] = None,
                  number_of_tiles: int = None,
@@ -104,7 +105,10 @@ class FloodManager:
         self.dem_names = dem_names
         self.output_dir = output_dir
         self.landcover_directory = landcover_directory
-        self.stream_bounds = stream_bounds
+        self.streamlines_directory = streamlines_directory
+        with open(STREAM_BOUNDS_FILE, 'r') as f:
+            self.stream_bounds = json.load(f)
+        self.stream_bounds = {os.path.join(self.streamlines_directory, key): value for key, value in self.stream_bounds.items()}
         self.oceans_pq = oceans_pq
 
         if not bbox:
@@ -421,11 +425,11 @@ class FloodManager:
             print("Error downloading landcover data:")
             print(result.stderr)
 
-    def download_streamlines(self, stream_dir: str, overwrite: bool = False) -> 'FloodManager':
+    def download_streamlines(self, overwrite: bool = False) -> 'FloodManager':
         result = subprocess.run([
             "s5cmd", "--no-sign-request", "cp" if overwrite else "sync",
             "s3://global-floodmaps/streamlines/*",
-            stream_dir
+            self.streamlines_directory
         ], capture_output=True, text=True)
 
         if result.returncode != 0:

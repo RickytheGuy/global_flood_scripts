@@ -14,8 +14,7 @@ if __name__ == "__main__":
     output_dir = r"C:\Users\lrr43\Downloads\testing"
     landcover_directory = r"C:\Users\lrr43\Documents\lu"
     oceans_pq = r"C:\Users\lrr43\Documents\worldmaps\seas_buffered.parquet"
-    with open(r"C:\Users\lrr43\Documents\worldmaps\stream_bounds.json", 'r') as f:
-        stream_bounds = json.load(f)
+    streamlines_directory = r"C:\Users\lrr43\Documents\worldmaps\streamlines"
 
     (
         FloodManager(
@@ -23,7 +22,7 @@ if __name__ == "__main__":
         dem_names=dem_names,
         output_dir=output_dir,
         landcover_directory=landcover_directory,
-        stream_bounds=stream_bounds,
+        streamlines_directory=streamlines_directory,
         oceans_pq=oceans_pq,
         # bbox=bbox,
         rps=[2, 5, 10, 25, 50, 100],
@@ -37,10 +36,10 @@ if __name__ == "__main__":
         # overwrite_landuse=True,
         # overwrite_streams=True,
         )
-        # .download_tilezen(r"C:\Users\lrr43\Documents\tilezen", overwrite=True)
-        # .download_alos(r"C:\Users\lrr43\Documents\alos_dems", overwrite=True)
-        # .download_fabdem(r"C:\Users\lrr43\Documents\fabdems", overwrite=True)
+        .download_tilezen(r"C:\Users\lrr43\Documents\tilezen")
+        .download_alos(r"C:\Users\lrr43\Documents\alos_dems")
+        .download_fabdem(r"C:\Users\lrr43\Documents\fabdems")
         .download_landcover()
-        # .run_all()
-        # .define_memory_usage('tilezen')
+        .download_streamlines()
+        .run_all()
     )
