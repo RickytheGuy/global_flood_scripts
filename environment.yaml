@@ -6,9 +6,11 @@ dependencies:
   - boto3
   - geopandas
   - gdal
+  - libgdal-arrow-parquet
   - pip
   - python=3.13
   - psutil
+  - pyarrow
   - remotezip
   - s5cmd
   - shapely
