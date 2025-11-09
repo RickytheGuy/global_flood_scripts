@@ -107,7 +107,7 @@ class FloodManager:
         self.oceans_pq = oceans_pq
 
         if not bbox:
-            self.bbox = (-180.0, -90.0, 180.0, 90.0)
+            self.bbox = (-180, -90, 180, 90)
         else:
             self.bbox = bbox
 
