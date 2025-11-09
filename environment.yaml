@@ -9,6 +9,7 @@ dependencies:
   - pip
   - python
   - psutil
+  - remotezip
   - s5cmd
   - shapely
   - tqdm
