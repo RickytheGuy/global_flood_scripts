@@ -171,7 +171,7 @@ class FloodManager:
         
         limit = _get_num_processes({'fabdem': 3.84, 'alos': 3.91, 'tilezen': 3.57}.get(dem_type, os.cpu_count()))
         start_throttled_pbar(ex, warp_land_use, f"Warping land use for {dem_type}", 
-                               buffered_dems, dem_type=dem_type, 
+                               buffered_dems, limit, dem_type=dem_type, 
                                landcover_directory=self.landcover_directory, overwrite=self.overwrite_landuse)
 
         stream_files = glob.glob(os.path.join(self.output_dir, '*', '*', f'inputs={dem_type}', 'streams.tif'))
@@ -184,7 +184,7 @@ class FloodManager:
                                buffered_dems, limit, dem_type=dem_type)
 
         start_throttled_pbar(ex, prepare_inputs, f"Preparing input files for {dem_type}", 
-                               buffered_dems, dem_type=dem_type, mannings_table=self.mannings_table, 
+                               buffered_dems, limit, dem_type=dem_type, mannings_table=self.mannings_table, 
                                rps=self.rps, forecast_date=self.forecast_date, overwrite_arc=self.overwrite_vdts,
                                overwrite_c2f_bathymetry=self.overwrite_burned_dems,
                                overwrite_c2f_floodmap=self.overwrite_floodmaps, arc_args=self.arc_args, 
@@ -221,7 +221,7 @@ class FloodManager:
         floodmap_groups = [glob.glob(os.path.join(floodmap_dir, '*.tif')) for floodmap_dir in floodmap_dirs]
         limit = _get_num_processes({'fabdem': 4.71, 'alos': 4.68, 'tilezen': 3.18}.get(dem_type, os.cpu_count()))
         start_throttled_pbar(ex, unbuffer_remove, f"Unbuffering floodmaps for {dem_type}", 
-                               floodmap_groups, dem_type=dem_type, buffer_distance=self.buffer_distance, oceans_pq=self.oceans_pq)
+                               floodmap_groups, limit, dem_type=dem_type, buffer_distance=self.buffer_distance, oceans_pq=self.oceans_pq)
 
     def run_all(self) -> 'FloodManager':
         run_majority_rps = bool(self.rps)
@@ -418,7 +418,7 @@ class FloodManager:
         command = ["s5cmd", "--no-sign-request", "cp" if overwrite else "sync"]
         if not overwrite:
             command.append("--size-only")
-        command.extend(["s3://global-floodmaps/landcover/", self.landcover_directory])
+        command.extend(["s3://global-floodmaps/landcover/*", self.landcover_directory])
 
         result = subprocess.run(command, capture_output=True, text=True)
 
@@ -432,7 +432,7 @@ class FloodManager:
         command = ["s5cmd", "--no-sign-request", "cp" if overwrite else "sync"]
         if not overwrite:
             command.append("--size-only")
-        command.extend(["s3://global-floodmaps/streamlines/", self.streamlines_directory])
+        command.extend(["s3://global-floodmaps/streamlines/*", self.streamlines_directory])
 
         result = subprocess.run(command, capture_output=True, text=True)
 
