@@ -169,12 +169,17 @@ def start_unthrottled_pbar(ex, func, desc: str, items: list, **func_kwargs):
 def start_throttled_pbar(ex, func, desc: str, items: list, limit: int, **func_kwargs):
     return list(no_leave_pbar(throttled_map(ex, partial(func, **func_kwargs), items, limit), total=len(items), desc=desc))
 
-def _convert_process_count(n: int) -> int:
-    mem_per_process = n / 127.696 # Calibrated using 128 GB RAM machines....
-    if (mem_per_process * os.cpu_count()) > psutil.virtual_memory().total / (1024 ** 3):
-        return os.cpu_count()
-    
-    return int(psutil.virtual_memory().total / (1024 ** 3) / mem_per_process)
+def _get_num_processes(n: float) -> int:
+    """
+    Parameters
+    ----------
+    n : int
+        Estimated memory usage in GB for a single process.
+    """
+    total_mem = psutil.virtual_memory().total / (1024 ** 3)  # in GB
+    n_processes = os.cpu_count() or 1
+    return max(min(n_processes, floor(total_mem / n)-1), 1)
+
 
 def buffer_dem(dem: str, 
                output_dir: str,

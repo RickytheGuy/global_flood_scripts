@@ -5,10 +5,9 @@ from concurrent.futures import ProcessPoolExecutor
 import tqdm
 import pandas as pd
 from osgeo import gdal
-import asf_search as asf
 
 from .parallel_functions import (
-    buffer_dem, run_arc, rasterize_streams, warp_land_use, _convert_process_count,
+    buffer_dem, run_arc, rasterize_streams, warp_land_use, _get_num_processes,
     start_unthrottled_pbar, download_flows, prepare_water_mask, prepare_inputs, 
     start_throttled_pbar, run_c2f_bathymetry, run_c2f_floodmaps, unbuffer_remove,
     majority_vote, download_tilezen_in_area, download_alos_in_area, 
@@ -152,24 +151,26 @@ class FloodManager:
             if buffered_dem:
                 buffered_dems.append(buffered_dem)
 
-        limit = _convert_process_count({'fabdem': 31, 'alos': 20, 'tilezen': 21}.get(dem_type, os.cpu_count()))
+        limit = _get_num_processes({'fabdem': 4.05, 'alos': 4.89, 'tilezen': 4.31}.get(dem_type, os.cpu_count()))
         start_throttled_pbar(ex, rasterize_streams, f"Rasterizing streams for {dem_type}", 
                              buffered_dems, limit, dem_type=dem_type, 
                              bounds=self.stream_bounds, overwrite=self.overwrite_streams)
-
-        start_unthrottled_pbar(ex, warp_land_use, f"Warping land use for {dem_type}", 
+        
+        limit = _get_num_processes({'fabdem': 3.84, 'alos': 3.91, 'tilezen': 3.57}.get(dem_type, os.cpu_count()))
+        start_throttled_pbar(ex, warp_land_use, f"Warping land use for {dem_type}", 
                                buffered_dems, dem_type=dem_type, 
                                landcover_directory=self.landcover_directory, overwrite=self.overwrite_landuse)
 
         stream_files = glob.glob(os.path.join(self.output_dir, '*', '*', f'inputs={dem_type}', 'streams.tif'))
         stream_files = filter_files_in_extent_by_lat_lon_dirs(self.bbox[0], self.bbox[1], self.bbox[2], self.bbox[3], stream_files)
-        start_unthrottled_pbar(ex, download_flows, f"Downloading flows for {dem_type}", 
-                               stream_files, rps=self.rps, 
+        start_throttled_pbar(ex, download_flows, f"Downloading flows for {dem_type}", 
+                               stream_files, limit, rps=self.rps, 
                                forecast_date=self.forecast_date)
-        start_unthrottled_pbar(ex, prepare_water_mask, f"Preparing water masks for {dem_type}", 
-                               buffered_dems, dem_type=dem_type)
+        
+        start_throttled_pbar(ex, prepare_water_mask, f"Preparing water masks for {dem_type}", 
+                               buffered_dems, limit, dem_type=dem_type)
 
-        start_unthrottled_pbar(ex, prepare_inputs, f"Preparing input files for {dem_type}", 
+        start_throttled_pbar(ex, prepare_inputs, f"Preparing input files for {dem_type}", 
                                buffered_dems, dem_type=dem_type, mannings_table=self.mannings_table, 
                                rps=self.rps, forecast_date=self.forecast_date, overwrite_arc=self.overwrite_vdts,
                                overwrite_c2f_bathymetry=self.overwrite_burned_dems,
@@ -179,11 +180,12 @@ class FloodManager:
 
         inputs = glob.glob(os.path.join(self.output_dir, '*', '*', f'inputs={dem_type}', 'inputs=arc.txt'))
         inputs = filter_files_in_extent_by_lat_lon_dirs(self.bbox[0], self.bbox[1], self.bbox[2], self.bbox[3], inputs)
-        start_unthrottled_pbar(ex, run_arc, f"Running ARC for {dem_type}", inputs, dem_type=dem_type, overwrite=self.overwrite_vdts)
+        limit = _get_num_processes({'fabdem': 4.72, 'alos': 7.55, 'tilezen': 5.56}.get(dem_type, os.cpu_count()))
+        start_throttled_pbar(ex, run_arc, f"Running ARC for {dem_type}", inputs, limit, dem_type=dem_type, overwrite=self.overwrite_vdts)
 
         inputs = glob.glob(os.path.join(self.output_dir, '*', '*', f'inputs={dem_type}', 'inputs=burned.txt'))
         inputs = filter_files_in_extent_by_lat_lon_dirs(self.bbox[0], self.bbox[1], self.bbox[2], self.bbox[3], inputs)
-        limit = _convert_process_count({'fabdem': 32, 'alos': 17, 'tilezen': 25}.get(dem_type, os.cpu_count()))
+        limit = _get_num_processes({'fabdem': 4.85, 'alos': 8.11, 'tilezen': 5.07}.get(dem_type, os.cpu_count()))
         start_throttled_pbar(ex, run_c2f_bathymetry, f"Preparing burned DEMs for {dem_type}", 
                                inputs, limit, dem_type=dem_type, overwrite=self.overwrite_burned_dems)
 
@@ -196,14 +198,15 @@ class FloodManager:
         for name in names:
             inputs.extend(glob.glob(os.path.join(self.output_dir, '*', '*', f'inputs={dem_type}', f'inputs={name}.txt'))) 
         inputs = filter_files_in_extent_by_lat_lon_dirs(self.bbox[0], self.bbox[1], self.bbox[2], self.bbox[3], inputs)
-        limit = _convert_process_count({'fabdem': 32, 'alos': 23, 'tilezen': 27}.get(dem_type, os.cpu_count()))
+        limit = _get_num_processes({'fabdem': 4.76, 'alos': 7.8, 'tilezen': 4.97}.get(dem_type, os.cpu_count()))
         start_throttled_pbar(ex, run_c2f_floodmaps, f"Creating floodmaps for {dem_type}", 
                                inputs, limit, dem_type=dem_type, overwrite=self.overwrite_floodmaps)
         
         floodmap_dirs = glob.glob(os.path.join(self.output_dir, '*', '*', f'floodmaps', f'dem={dem_type}'))
         floodmap_dirs = filter_files_in_extent_by_lat_lon_dirs(self.bbox[0], self.bbox[1], self.bbox[2], self.bbox[3], floodmap_dirs)
         floodmap_groups = [glob.glob(os.path.join(floodmap_dir, '*.tif')) for floodmap_dir in floodmap_dirs]
-        start_unthrottled_pbar(ex, unbuffer_remove, f"Unbuffering floodmaps for {dem_type}", 
+        limit = _get_num_processes({'fabdem': 4.71, 'alos': 4.68, 'tilezen': 3.18}.get(dem_type, os.cpu_count()))
+        start_throttled_pbar(ex, unbuffer_remove, f"Unbuffering floodmaps for {dem_type}", 
                                floodmap_groups, dem_type=dem_type, buffer_distance=self.buffer_distance, oceans_pq=self.oceans_pq)
 
     def run_all(self) -> 'FloodManager':
@@ -291,4 +294,108 @@ class FloodManager:
             start_unthrottled_pbar(ex, download_fabdem_tile, f"Downloading FABDEM DEMs", args, output_dir=output_dir,
                                    overwrite=overwrite)
 
+        return self
+
+    def define_memory_usage(self, dem_type: str) -> 'FloodManager':
+        """Estimate and define memory usage for processing based on DEM types and system resources."""
+        from memory_profiler import memory_usage
+
+        assert dem_type in self.dem_names, f"DEM type {dem_type} not recognized."
+
+        original_dems = glob.glob(os.path.join(self.dem_dirs[self.dem_names.index(dem_type)], '*.tif'), recursive=True)
+        og_dems_filtered = get_dem_in_extent(self.bbox[0], self.bbox[1], self.bbox[2], self.bbox[3], original_dems, dem_type)
+        og_dems_filtered = og_dems_filtered[-1]  # Test with a single DEM to estimate memory
+
+        mem_usage, buffered_dem = memory_usage((buffer_dem, (og_dems_filtered,),
+                                  {'dems': original_dems,
+                                   'output_dir': self.output_dir,
+                                   'dem_type': dem_type,
+                                   'buffer_distance': self.buffer_distance,
+                                   'valid_tiles': self.valid_tiles,
+                                   'as_vrt': self.buffer_dems_as_vrt,
+                                   'overwrite': self.overwrite_buffered_dems}),
+                                 max_usage=True, retval=True)
+        print(f"Estimated memory usage for buffering DEMs of type {dem_type}: {(mem_usage/1024):.2f} GB")
+
+        mem_usage, _ = memory_usage((rasterize_streams, (buffered_dem,),
+                                  {'dem_type': dem_type,
+                                   'bounds': self.stream_bounds,
+                                   'overwrite': self.overwrite_streams}),
+                                 max_usage=True, retval=True)
+        print(f"Estimated memory usage for rasterizing streams of type {dem_type}: {(mem_usage/1024):.2f} GB")
+        
+        mem_usage, _ = memory_usage((warp_land_use, (buffered_dem,),
+                                  {'dem_type': dem_type,
+                                   'landcover_directory': self.landcover_directory,
+                                   'overwrite': self.overwrite_landuse}),
+                                 max_usage=True, retval=True)
+        print(f"Estimated memory usage for warping land use of type {dem_type}: {(mem_usage/1024):.2f} GB")
+
+        mem_usage, _ = memory_usage((prepare_water_mask, (buffered_dem,),
+                                  {'dem_type': dem_type}),
+                                 max_usage=True, retval=True)
+        print(f"Estimated memory usage for preparing water mask of type {dem_type}: {(mem_usage/1024):.2f} GB")
+
+        mem_usage, _ = memory_usage((prepare_inputs, (buffered_dem,),
+                                  {'dem_type': dem_type,
+                                   'mannings_table': self.mannings_table,
+                                   'rps': self.rps,
+                                   'forecast_date': self.forecast_date,
+                                   'overwrite_arc': self.overwrite_vdts,
+                                   'overwrite_c2f_bathymetry': self.overwrite_burned_dems,
+                                   'overwrite_c2f_floodmap': self.overwrite_floodmaps,
+                                   'arc_args': self.arc_args,
+                                   'c2f_bathymetry_args': self.c2f_bathymetry_args,
+                                   'c2f_floodmap_args': self.c2f_floodmap_args}),
+                                 max_usage=True, retval=True)
+        print(f"Estimated memory usage for preparing inputs of type {dem_type}: {(mem_usage/1024):.2f} GB")
+
+        stream_files = glob.glob(os.path.join(self.output_dir, '*', '*', f'inputs={dem_type}', 'streams.tif'))
+        stream_files = filter_files_in_extent_by_lat_lon_dirs(self.bbox[0], self.bbox[1], self.bbox[2], self.bbox[3], stream_files)
+        stream_file = stream_files[0]  # Test with a single stream file to estimate memory
+        mem_usage, _ = memory_usage((download_flows, (stream_file,),
+                                  {'rps': self.rps,
+                                   'forecast_date': self.forecast_date}),
+                                 max_usage=True, retval=True)
+        print(f"Estimated memory usage for downloading flows of type {dem_type}: {(mem_usage/1024):.2f} GB")
+
+        inputs = glob.glob(os.path.join(self.output_dir, '*', '*', f'inputs={dem_type}', 'inputs=arc.txt'))
+        inputs = filter_files_in_extent_by_lat_lon_dirs(self.bbox[0], self.bbox[1], self.bbox[2], self.bbox[3], inputs)
+        inputs = inputs[0]  # Test with a single input to estimate memory
+        mem_usage, _ = memory_usage((run_arc, (inputs,),
+                                  {'dem_type': dem_type, 'overwrite': self.overwrite_vdts}),
+                                 max_usage=True, retval=True)
+        print(f"Estimated memory usage for running ARC of type {dem_type}: {(mem_usage/1024):.2f} GB")
+        inputs = glob.glob(os.path.join(self.output_dir, '*', '*', f'inputs={dem_type}', 'inputs=burned.txt'))
+        inputs = filter_files_in_extent_by_lat_lon_dirs(self.bbox[0], self.bbox[1], self.bbox[2], self.bbox[3], inputs)
+        inputs = inputs[0]  # Test with a single input to estimate memory
+        mem_usage, _ = memory_usage((run_c2f_bathymetry, (inputs,),
+                                  {'dem_type': dem_type, 'overwrite': self.overwrite_burned_dems}),
+                                 max_usage=True, retval=True)
+        print(f"Estimated memory usage for preparing burned DEMs of type {dem_type}: {(mem_usage/1024):.2f} GB")
+
+        names = []
+        if self.rps:
+            names.append(f'flows_{",".join(map(str, self.rps))}')
+        if self.forecast_date:
+            names.append(self.forecast_date)
+        inputs = []
+        for name in names:
+            inputs.extend(glob.glob(os.path.join(self.output_dir, '*', '*', f'inputs={dem_type}', f'inputs={name}.txt'))) 
+        inputs = filter_files_in_extent_by_lat_lon_dirs(self.bbox[0], self.bbox[1], self.bbox[2], self.bbox[3], inputs)
+        inputs = inputs[0]  # Test with a single input to estimate memory
+        mem_usage, _ = memory_usage((run_c2f_floodmaps, (inputs,),
+                                  {'dem_type': dem_type, 'overwrite': self.overwrite_floodmaps}),
+                                 max_usage=True, retval=True)
+        print(f"Estimated memory usage for creating floodmaps of type {dem_type}: {(mem_usage/1024):.2f} GB")
+
+        floodmap_dirs = glob.glob(os.path.join(self.output_dir, '*', '*', f'floodmaps', f'dem={dem_type}'))
+        floodmap_dirs = filter_files_in_extent_by_lat_lon_dirs(self.bbox[0], self.bbox[1], self.bbox[2], self.bbox[3], floodmap_dirs)
+        floodmap_groups = [glob.glob(os.path.join(floodmap_dir, '*.tif')) for floodmap_dir in floodmap_dirs]
+        mem_usage, _ = memory_usage((unbuffer_remove, (floodmap_groups[0],),
+                                  {'dem_type': dem_type,
+                                   'buffer_distance': self.buffer_distance,
+                                   'oceans_pq': self.oceans_pq}),
+                                 max_usage=True, retval=True)
+        print(f"Estimated memory usage for unbuffering floodmaps of type {dem_type}: {(mem_usage/1024):.2f} GB")
         return self
