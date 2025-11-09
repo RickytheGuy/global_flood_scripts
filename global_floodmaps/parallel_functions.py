@@ -1,5 +1,6 @@
 import os
 import glob
+import shutil
 import tempfile
 from math import floor
 from functools import partial
@@ -7,7 +8,6 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 
 import boto3
 import psutil
-import shutil
 import numpy as np
 import xarray as xr
 import pandas as pd
