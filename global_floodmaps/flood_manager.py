@@ -103,6 +103,7 @@ class FloodManager:
         
         self.dem_dirs = dem_dirs
         self.dem_names = dem_names
+        self.og_dem_dict = {}
         self.output_dir = output_dir
         self.landcover_directory = landcover_directory
         self.streamlines_directory = streamlines_directory
@@ -147,7 +148,11 @@ class FloodManager:
         self.overwrite_buffered_dems = overwrite_buffered_dems
 
     def _run_one_dem_type(self, ex: ProcessPoolExecutor, dem_type: str):
-        original_dems = glob.glob(os.path.join(self.dem_dirs[self.dem_names.index(dem_type)], '*.tif'), recursive=True)
+        if dem_type in self.og_dem_dict:
+            original_dems = self.og_dem_dict[dem_type]
+        else:
+            original_dems = glob.glob(os.path.join(self.dem_dirs[self.dem_names.index(dem_type)], '*.tif'), recursive=True)
+
         og_dems_filtered = get_dem_in_extent(self.bbox[0], self.bbox[1], self.bbox[2], self.bbox[3], original_dems, dem_type)
         buffered_dems = []
         for buffered_dem in start_unthrottled_pbar(ex, 
@@ -268,8 +273,9 @@ class FloodManager:
             return self
 
         with ProcessPoolExecutor(min((os.cpu_count() * 2) - 4, len(args))) as ex:
-            start_unthrottled_pbar(ex, download_tilezen_in_area, f"Downloading Tilezen DEMs", args, output_dir=output_dir,
+            dems = start_unthrottled_pbar(ex, download_tilezen_in_area, f"Downloading Tilezen DEMs", args, output_dir=output_dir,
                                    overwrite=overwrite, z=z_level)
+        self.og_dem_dict['tilezen'] = dems
 
         return self
     
@@ -289,8 +295,10 @@ class FloodManager:
             raise FileNotFoundError(f".netrc file not found in {home}. Please create one with your ASF credentials. It should look like:\n\nmachine urs.earthdata.nasa.gov\nlogin YOUR_USERNAME\npassword YOUR_PASSWORD\n")
 
         with ProcessPoolExecutor(min((os.cpu_count() * 2) - 4, len(args))) as ex:
-            start_unthrottled_pbar(ex, download_alos_in_area, f"Downloading ALOS DEMs", args, output_dir=output_dir,
+            dems = start_unthrottled_pbar(ex, download_alos_in_area, f"Downloading ALOS DEMs", args, output_dir=output_dir,
                                    overwrite=overwrite)
+
+        self.og_dem_dict['alos'] = [d for d in dems if d]
 
         return self
     
@@ -305,8 +313,10 @@ class FloodManager:
             return self
 
         with ProcessPoolExecutor(min((os.cpu_count() * 2) - 4, len(args))) as ex:
-            start_unthrottled_pbar(ex, download_fabdem_tile, f"Downloading FABDEM DEMs", args, output_dir=output_dir,
+            dems = start_unthrottled_pbar(ex, download_fabdem_tile, f"Downloading FABDEM DEMs", args, output_dir=output_dir,
                                    overwrite=overwrite)
+
+        self.og_dem_dict['fabdem'] = dems
 
         return self
 

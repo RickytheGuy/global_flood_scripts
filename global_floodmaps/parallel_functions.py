@@ -2,6 +2,7 @@ import os
 import glob
 import shutil
 import tempfile
+import traceback
 from math import floor
 from functools import partial
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -155,13 +156,23 @@ def throttled_map(executor: ProcessPoolExecutor, func, items: list, limit: int =
     """
     futures = {executor.submit(func, x): x for x in items[:limit]}
     next_idx = limit
-    for future in as_completed(futures):
-        yield None
-        if next_idx < len(items):
-            new_future = executor.submit(func, items[next_idx])
-            futures[new_future] = items[next_idx]
-            next_idx += 1
-        del futures[future]
+
+    while futures:
+        for future in as_completed(futures):
+            item = futures.pop(future)
+            try:
+                yield future.result()
+            except:
+                print("Error processing item:", item)
+                traceback.print_exc()
+                return
+            if next_idx < len(items):
+                new_future = executor.submit(func, items[next_idx])
+                futures[new_future] = items[next_idx]
+                next_idx += 1
+                
+            if future in futures:
+                del futures[future]
 
 def start_unthrottled_pbar(ex, func, desc: str, items: list, **func_kwargs):
     return list(no_leave_pbar(unthrottled_map(ex, partial(func, **func_kwargs), items), total=len(items), desc=desc))
@@ -406,6 +417,8 @@ def warp_land_use(dem: str,
         ds.SetProjection(proj)
         ds.GetRasterBand(1).Fill(10)
         return
+
+    os.makedirs(_dir(lu_file), exist_ok=True)
 
     if save_vrt:
         xres = gt[1]
@@ -1173,7 +1186,7 @@ def download_tilezen_in_area(bbox: list[int], output_dir: str, overwrite: bool =
     minx, miny, maxx, maxy = bbox
     out_file = os.path.join(output_dir, f"tilezen_{minx}_{miny}.tif")
     if not overwrite and opens_right(out_file):
-        return
+        return out_file
     
     _minx, _maxy = lon_to_x(minx, z), lat_to_y(miny, z)
     _maxx, _miny = lon_to_x(maxx, z), lat_to_y(maxy, z)
@@ -1199,13 +1212,15 @@ def download_tilezen_in_area(bbox: list[int], output_dir: str, overwrite: bool =
         options=options
     )
 
+    return out_file
+
 def download_alos_in_area(bbox: list[int], output_dir: str, overwrite: bool = False):
     bbox: Polygon = box(*bbox)
     x, y = floor(bbox.bounds[0]), floor(bbox.bounds[1])
     tile_name = f'alos_{x}_{y}.tif'
     out_file = os.path.join(output_dir, tile_name)
     if not overwrite and opens_right(out_file):
-        return
+        return out_file
     
     results: list[asf.Products.ALOSProduct] = asf.geo_search(
         platform='ALOS',
@@ -1216,7 +1231,7 @@ def download_alos_in_area(bbox: list[int], output_dir: str, overwrite: bool = Fa
     )
 
     if not results:
-        return
+        return None
     
     # Compute geometry
     for result in results:
@@ -1260,7 +1275,7 @@ def download_alos_in_area(bbox: list[int], output_dir: str, overwrite: bool = Fa
     ds = None
 
     shutil.rmtree(temp_dir)
-
+    return out_file
 
 def warp_to_epsg(dem: str):
     out_file = dem.replace('.dem.tif', '_epsg4326.tif')
@@ -1280,7 +1295,8 @@ def download_fabdem_tile(bbox: list[int], output_dir: str, overwrite: bool = Fal
     s3_path = f"s3://{bucket}/{key}"
     out_file = os.path.join(output_dir, os.path.basename(s3_path))
     if not overwrite and opens_right(out_file):
-        return
+        return out_file
     
     s3 = boto3.client('s3')
     s3.download_file(bucket, key, out_file)
+    return out_file
