@@ -319,3 +319,23 @@ def get_s3_fabdem_path(x, y):
     filename = f"{fmt_lat(lat_tile, lat_prefix_tile)}{fmt_lon(lon_tile, lon_prefix_tile)}_FABDEM_V1-2.tif"
 
     return 'global-floodmaps', f'dems/fabdem/{folder}/{filename}'
+
+def are_there_non_zero_in_raster(raster_path: str) -> bool:
+    ds: gdal.Dataset = gdal.Open(raster_path)
+    # Iterate on blocksize to avoid loading entire raster into memory
+    band = ds.GetRasterBand(1)
+    block_sizes = band.GetBlockSize()
+    x_block_size = block_sizes[0]
+    y_block_size = block_sizes[1]
+    x_size = band.XSize
+    y_size = band.YSize
+
+    for y in range(0, y_size, y_block_size):
+        rows = y_block_size if y + y_block_size < y_size else y_size - y
+        for x in range(0, x_size, x_block_size):
+            cols = x_block_size if x + x_block_size < x_size else x_size - x
+            data = band.ReadAsArray(x, y, cols, rows)
+            if np.any(data != 0):
+                return True
+            
+    return False
