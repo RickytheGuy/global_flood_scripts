@@ -25,7 +25,8 @@ from curve2flood import Curve2Flood_MainFunction
 from .utility_functions import (
     opens_right, get_dataset_info, convert_gt_to_bbox, is_tile_in_valid_tiles, 
     get_dem_in_extent, dem_to_dir, _dir, clean_stream_raster, get_linknos,
-    no_leave_pbar, lat_to_y, lon_to_x, get_s3_fabdem_path
+    no_leave_pbar, lat_to_y, lon_to_x, get_s3_fabdem_path,
+    are_there_non_zero_in_raster
 )
 
 from ._constants import ESA_TILES_FILE, STORAGE_OPTIONS
@@ -315,7 +316,7 @@ def rasterize_streams(dem: str,
     """
     stream_file = os.path.join(_dir(dem, 2), f'inputs={dem_type}', 'streams.tif')
 
-    if opens_right(stream_file) and not overwrite and gdal.Open(stream_file).ReadAsArray().any():
+    if opens_right(stream_file) and not overwrite and are_there_non_zero_in_raster(stream_file):
         return
     
     width, height, gt, proj = get_dataset_info(dem)
