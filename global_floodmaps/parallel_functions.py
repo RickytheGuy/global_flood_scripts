@@ -945,7 +945,7 @@ def get_oceans_raster(oceans_pq: str, bbox: tuple[float], width, height, gt, pro
         return
     
     # Step 1: Convert GeoDataFrame to OGR Layer (in memory)
-    vector_ds: gdal.Dataset = ogr.GetDriverByName('Memory').CreateDataSource('temp')
+    vector_ds: gdal.Dataset = ogr.GetDriverByName('MEM').CreateDataSource('temp')
     spatial_ref = osr.SpatialReference(wkt=gdf.crs.to_wkt())
 
     layer: ogr.Layer = vector_ds.CreateLayer('layer', srs=spatial_ref, geom_type=ogr.wkbPolygon)
