@@ -1298,7 +1298,7 @@ def download_fabdem_tile(bbox: list[int], output_dir: str, overwrite: bool = Fal
     s3 = boto3.client('s3')
     try:
         s3.download_file(bucket, key, out_file)
-    except botocore.exceptions.NoCredentialsError:
+    except:
         return None
     
     return out_file
