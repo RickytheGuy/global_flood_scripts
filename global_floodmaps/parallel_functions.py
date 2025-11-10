@@ -721,6 +721,9 @@ def prepare_inputs(dem: str,
     bmf = os.path.join(out_dir, 'flow_files', 'bmf.csv')
     main_input_file = os.path.join(inputs_dir, f'inputs=arc.txt')
 
+    if not opens_right(bmf):
+        return
+
     # Use empirical equation to determine x-section distance
     max_q = pd.read_csv(bmf, usecols=['max'], na_filter=False).values.max() # This is the fastest way to get the maximum value
     x_sect_dist = int(min(7500, (5e7 / max_q) + 4000 + (0.0001 * max_q)) / 2) # Divided by two, because this eq is based on top width, and x_sect_dist = 0.5 * tw
