@@ -170,26 +170,26 @@ class FloodManager:
                 buffered_dems.append(buffered_dem)
 
         limit = _get_num_processes({'fabdem': 8, 'alos': 9, 'tilezen': 8}.get(dem_type, os.cpu_count()))
-        start_throttled_pbar(ex, rasterize_streams, f"Rasterizing streams for {dem_type}", 
+        start_throttled_pbar(ex, rasterize_streams, f"Rasterizing streams for {dem_type} ({limit})", 
                              buffered_dems, limit, dem_type=dem_type, 
                              bounds=self.stream_bounds, overwrite=self.overwrite_streams)
         
         limit = _get_num_processes({'fabdem': 3.84, 'alos': 3.91, 'tilezen': 3.57}.get(dem_type, os.cpu_count()))
-        start_throttled_pbar(ex, warp_land_use, f"Warping land use for {dem_type}", 
+        start_throttled_pbar(ex, warp_land_use, f"Warping land use for {dem_type} ({limit})", 
                                buffered_dems, limit, dem_type=dem_type, 
                                landcover_directory=self.landcover_directory, overwrite=self.overwrite_landuse)
 
         stream_files = glob.glob(os.path.join(self.output_dir, '*', '*', f'inputs={dem_type}', 'streams.tif'))
         stream_files = filter_files_in_extent_by_lat_lon_dirs(self.bbox[0], self.bbox[1], self.bbox[2], self.bbox[3], stream_files)
-        start_throttled_pbar(ex, download_flows, f"Downloading flows for {dem_type}", 
+        start_throttled_pbar(ex, download_flows, f"Downloading flows for {dem_type} ({limit})", 
                                stream_files, limit, rps=self.rps, 
                                forecast_date=self.forecast_date)
         
         mask_limit = _get_num_processes({'fabdem': 3.84, 'alos': 5, 'tilezen': 3.57}.get(dem_type, os.cpu_count()))
-        start_throttled_pbar(ex, prepare_water_mask, f"Preparing water masks for {dem_type}", 
+        start_throttled_pbar(ex, prepare_water_mask, f"Preparing water masks for {dem_type} ({mask_limit})", 
                                buffered_dems, mask_limit, dem_type=dem_type)
 
-        start_throttled_pbar(ex, prepare_inputs, f"Preparing input files for {dem_type}", 
+        start_throttled_pbar(ex, prepare_inputs, f"Preparing input files for {dem_type} ({limit})", 
                                buffered_dems, limit, dem_type=dem_type, mannings_table=self.mannings_table, 
                                rps=self.rps, forecast_date=self.forecast_date, overwrite_arc=self.overwrite_vdts,
                                overwrite_c2f_bathymetry=self.overwrite_burned_dems,
@@ -200,12 +200,12 @@ class FloodManager:
         inputs = glob.glob(os.path.join(self.output_dir, '*', '*', f'inputs={dem_type}', 'inputs=arc.txt'))
         inputs = filter_files_in_extent_by_lat_lon_dirs(self.bbox[0], self.bbox[1], self.bbox[2], self.bbox[3], inputs)
         limit = _get_num_processes({'fabdem': 1.7, 'alos': 3.5, 'tilezen': 3.5}.get(dem_type, os.cpu_count()))
-        start_throttled_pbar(ex, run_arc, f"Running ARC for {dem_type}", inputs, limit, dem_type=dem_type, overwrite=self.overwrite_vdts)
+        start_throttled_pbar(ex, run_arc, f"Running ARC for {dem_type} ({limit})", inputs, limit, dem_type=dem_type, overwrite=self.overwrite_vdts)
 
         inputs = glob.glob(os.path.join(self.output_dir, '*', '*', f'inputs={dem_type}', 'inputs=burned.txt'))
         inputs = filter_files_in_extent_by_lat_lon_dirs(self.bbox[0], self.bbox[1], self.bbox[2], self.bbox[3], inputs)
         limit = _get_num_processes({'fabdem': 4.85, 'alos': 6.2, 'tilezen': 5.07}.get(dem_type, os.cpu_count()))
-        start_throttled_pbar(ex, run_c2f_bathymetry, f"Preparing burned DEMs for {dem_type}", 
+        start_throttled_pbar(ex, run_c2f_bathymetry, f"Preparing burned DEMs for {dem_type} ({limit})", 
                                inputs, limit, dem_type=dem_type, overwrite=self.overwrite_burned_dems)
 
         names = []
@@ -218,15 +218,15 @@ class FloodManager:
             inputs.extend(glob.glob(os.path.join(self.output_dir, '*', '*', f'inputs={dem_type}', f'inputs={name}.txt'))) 
         inputs = filter_files_in_extent_by_lat_lon_dirs(self.bbox[0], self.bbox[1], self.bbox[2], self.bbox[3], inputs)
 
-        limit = _get_num_processes({'fabdem': 4.76, 'alos': 3.6, 'tilezen': 4}.get(dem_type, os.cpu_count()))
-        start_throttled_pbar(ex, run_c2f_floodmaps, f"Creating floodmaps for {dem_type}", 
+        limit = _get_num_processes({'fabdem': 4.76, 'alos': 6, 'tilezen': 4}.get(dem_type, os.cpu_count()))
+        start_throttled_pbar(ex, run_c2f_floodmaps, f"Creating floodmaps for {dem_type} ({limit})", 
                                inputs, limit, dem_type=dem_type, overwrite=self.overwrite_floodmaps)
         
         floodmap_dirs = glob.glob(os.path.join(self.output_dir, '*', '*', f'floodmaps', f'dem={dem_type}'))
         floodmap_dirs = filter_files_in_extent_by_lat_lon_dirs(self.bbox[0], self.bbox[1], self.bbox[2], self.bbox[3], floodmap_dirs)
         floodmap_groups = [glob.glob(os.path.join(floodmap_dir, '*.tif')) for floodmap_dir in floodmap_dirs]
         limit = _get_num_processes({'fabdem': 4.71, 'alos': 4.68, 'tilezen': 3.18}.get(dem_type, os.cpu_count()))
-        start_throttled_pbar(ex, unbuffer_remove, f"Unbuffering floodmaps for {dem_type}", 
+        start_throttled_pbar(ex, unbuffer_remove, f"Unbuffering floodmaps for {dem_type} ({limit})", 
                                floodmap_groups, limit, dem_type=dem_type, buffer_distance=self.buffer_distance, oceans_pq=self.oceans_pq)
 
     def run_all(self) -> 'FloodManager':
