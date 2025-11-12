@@ -872,7 +872,7 @@ def run_c2f_bathymetry(input_file: str, dem_type: str, overwrite: bool = False):
         try:
             Curve2Flood_MainFunction(input_file, 
                                      quiet=True, 
-                                     bathymetry_creation_options=['COMPRESS=LERC_DEFLATE', f'PREDICTOR={3 if dem_type == "fabdem" else 2}', 'MAX_Z_ERROR=0.01', 'ZLEVEL=8', 'NUM_THREADS=ALL_CPUS'])
+                                     bathymetry_creation_options=['COMPRESS=LERC_DEFLATE', 'MAX_Z_ERROR=0.01', 'ZLEVEL=8', 'NUM_THREADS=ALL_CPUS'])
         except Exception as e:
             print(input_file)
             raise e
