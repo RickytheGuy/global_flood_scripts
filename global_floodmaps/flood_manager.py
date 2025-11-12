@@ -103,6 +103,11 @@ class FloodManager:
         
         self.dem_dirs = dem_dirs
         self.dem_names = dem_names
+        assert len(self.dem_dirs) == len(self.dem_names), "dem_dirs and dem_names must have the same length."
+        for dem_dir, dem_name in zip(self.dem_dirs, self.dem_names):
+            if dem_name.lower() not in dem_dir.lower():
+                print(f"Warning: DEM name '{dem_name}' does not appear to match directory '{dem_dir}'.")
+                
         self.og_dem_dict = {}
         self.output_dir = output_dir
         self.landcover_directory = landcover_directory
