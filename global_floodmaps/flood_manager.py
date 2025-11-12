@@ -218,7 +218,7 @@ class FloodManager:
             inputs.extend(glob.glob(os.path.join(self.output_dir, '*', '*', f'inputs={dem_type}', f'inputs={name}.txt'))) 
         inputs = filter_files_in_extent_by_lat_lon_dirs(self.bbox[0], self.bbox[1], self.bbox[2], self.bbox[3], inputs)
 
-        limit = _get_num_processes({'fabdem': 4.76, 'alos': 3.6, 'tilezen': 4.97}.get(dem_type, os.cpu_count()))
+        limit = _get_num_processes({'fabdem': 4.76, 'alos': 3.6, 'tilezen': 4}.get(dem_type, os.cpu_count()))
         start_throttled_pbar(ex, run_c2f_floodmaps, f"Creating floodmaps for {dem_type}", 
                                inputs, limit, dem_type=dem_type, overwrite=self.overwrite_floodmaps)
         
