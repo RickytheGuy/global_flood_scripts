@@ -1306,3 +1306,37 @@ def download_fabdem_tile(bbox: list[int], output_dir: str, overwrite: bool = Fal
         return None
     
     return out_file
+
+def download_alos_tile(bbox: list[int], output_dir: str, overwrite: bool = False):
+    minx, miny, maxx, maxy = bbox
+    bucket = 's3://global-floodmaps'
+    key = f'dems/alos/alos_{floor(minx)}_{floor(miny)}.tif'
+    s3_path = f"s3://{bucket}/{key}"
+    out_file = os.path.join(output_dir, os.path.basename(s3_path))
+    if not overwrite and opens_right(out_file):
+        return out_file
+    
+    s3 = boto3.client('s3')
+    try:
+        s3.download_file(bucket, key, out_file)
+    except:
+        return None
+    
+    return out_file
+
+def download_tilezen_tile(bbox: list[int], output_dir: str, overwrite: bool = False):
+    minx, miny, maxx, maxy = bbox
+    bucket = 's3://global-floodmaps'
+    key = f'dems/tilezen/tilezen_{floor(minx)}_{floor(miny)}.tif'
+    s3_path = f"s3://{bucket}/{key}"
+    out_file = os.path.join(output_dir, os.path.basename(s3_path))
+    if not overwrite and opens_right(out_file):
+        return out_file
+    
+    s3 = boto3.client('s3')
+    try:
+        s3.download_file(bucket, key, out_file)
+    except:
+        return None
+    
+    return out_file

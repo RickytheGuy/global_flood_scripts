@@ -13,7 +13,7 @@ from .parallel_functions import (
     start_unthrottled_pbar, download_flows, prepare_water_mask, prepare_inputs, 
     start_throttled_pbar, run_c2f_bathymetry, run_c2f_floodmaps, unbuffer_remove,
     majority_vote, download_tilezen_in_area, download_alos_in_area, 
-    download_fabdem_tile
+    download_fabdem_tile, download_alos_tile, download_tilezen_tile
 )
 
 from .utility_functions import (
@@ -107,7 +107,7 @@ class FloodManager:
         for dem_dir, dem_name in zip(self.dem_dirs, self.dem_names):
             if dem_name.lower() not in dem_dir.lower():
                 print(f"Warning: DEM name '{dem_name}' does not appear to match directory '{dem_dir}'.")
-                
+
         self.og_dem_dict = {}
         self.output_dir = output_dir
         self.landcover_directory = landcover_directory
@@ -308,7 +308,7 @@ class FloodManager:
 
         return self
     
-    def download_fabdem(self, output_dir: str, overwrite: bool = False) -> 'FloodManager':
+    def download_from_s3(self, output_dir: str, type: str, overwrite: bool = False) -> 'FloodManager':
         minx, miny, maxx, maxy = self.bbox
         os.makedirs(output_dir, exist_ok=True)
 
@@ -318,11 +318,17 @@ class FloodManager:
             print("No FABDEM tiles to download in the specified bounding box.")
             return self
 
+        assert type in ['fabdem', 'alos', 'tilezen'], f"DEM type {type} not recognized."
+        download_func = {
+            'fabdem': download_fabdem_tile,
+            'alos': download_alos_tile,
+            'tilezen': download_tilezen_tile
+        }[type]
         with ProcessPoolExecutor(min((os.cpu_count() * 2) - 4, len(args))) as ex:
-            dems = start_unthrottled_pbar(ex, download_fabdem_tile, f"Downloading FABDEM DEMs", args, output_dir=output_dir,
+            dems = start_unthrottled_pbar(ex, download_func, f"Downloading {type} DEMs", args, output_dir=output_dir,
                                    overwrite=overwrite)
 
-        self.og_dem_dict['fabdem'] = [d for d in dems if d]
+        self.og_dem_dict[type] = [d for d in dems if d]
 
         return self
 
