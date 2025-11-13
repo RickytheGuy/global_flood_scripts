@@ -51,7 +51,7 @@ class FloodManager:
                  overwrite_vdts: bool = False,
                  overwrite_streams: bool = False,
                  overwrite_landuse: bool = False,
-                 overwrite_buffered_dems: bool = False):
+                 overwrite_buffered_dems: bool = False,):
         """
         Initialize a FloodManager instance.
 
@@ -307,8 +307,8 @@ class FloodManager:
         self.og_dem_dict['alos'] = [d for d in dems if d]
 
         return self
-    
-    def download_from_s3(self, output_dir: str, type: str, overwrite: bool = False) -> 'FloodManager':
+
+    def download_from_s3(self, output_dir: str, type: str, overwrite: bool = False, no_download: bool = False) -> 'FloodManager':
         minx, miny, maxx, maxy = self.bbox
         os.makedirs(output_dir, exist_ok=True)
 
@@ -324,9 +324,10 @@ class FloodManager:
             'alos': download_alos_tile,
             'tilezen': download_tilezen_tile
         }[type]
+
         with ProcessPoolExecutor(min((os.cpu_count() * 2) - 4, len(args))) as ex:
             dems = start_unthrottled_pbar(ex, download_func, f"Downloading {type} DEMs", args, output_dir=output_dir,
-                                   overwrite=overwrite)
+                                          download=not no_download, overwrite=overwrite)
 
         self.og_dem_dict[type] = [d for d in dems if d]
 

@@ -1291,7 +1291,7 @@ def warp_to_epsg(dem: str):
     os.remove(dem)
     shutil.move(out_file, dem)  # Replace the original DEM with the reprojected one
 
-def download_fabdem_tile(bbox: list[int], output_dir: str, overwrite: bool = False):
+def download_fabdem_tile(bbox: list[int], output_dir: str, overwrite: bool = False, download: bool = True):
     minx, miny, maxx, maxy = bbox
     bucket, key = get_s3_fabdem_path(minx, miny)
     s3_path = f"s3://{bucket}/{key}"
@@ -1300,6 +1300,11 @@ def download_fabdem_tile(bbox: list[int], output_dir: str, overwrite: bool = Fal
         return out_file
     
     s3 = boto3.client('s3')
+    if not download:
+        if not s3.head_object(Bucket=bucket, Key=key):
+            return None
+        return s3_path
+
     try:
         s3.download_file(bucket, key, out_file)
     except:
@@ -1307,7 +1312,7 @@ def download_fabdem_tile(bbox: list[int], output_dir: str, overwrite: bool = Fal
     
     return out_file
 
-def download_alos_tile(bbox: list[int], output_dir: str, overwrite: bool = False):
+def download_alos_tile(bbox: list[int], output_dir: str, overwrite: bool = False, download: bool = True):
     minx, miny, maxx, maxy = bbox
     bucket = 's3://global-floodmaps'
     key = f'dems/alos/alos_{floor(minx)}_{floor(miny)}.tif'
@@ -1317,6 +1322,13 @@ def download_alos_tile(bbox: list[int], output_dir: str, overwrite: bool = False
         return out_file
     
     s3 = boto3.client('s3')
+    if not download:
+        try:
+            s3.head_object(Bucket=bucket, Key=key)
+        except:
+            return None
+        return s3_path
+    
     try:
         s3.download_file(bucket, key, out_file)
     except:
@@ -1324,7 +1336,7 @@ def download_alos_tile(bbox: list[int], output_dir: str, overwrite: bool = False
     
     return out_file
 
-def download_tilezen_tile(bbox: list[int], output_dir: str, overwrite: bool = False):
+def download_tilezen_tile(bbox: list[int], output_dir: str, overwrite: bool = False, download: bool = True):
     minx, miny, maxx, maxy = bbox
     bucket = 's3://global-floodmaps'
     key = f'dems/tilezen/tilezen_{floor(minx)}_{floor(miny)}.tif'
@@ -1334,6 +1346,13 @@ def download_tilezen_tile(bbox: list[int], output_dir: str, overwrite: bool = Fa
         return out_file
     
     s3 = boto3.client('s3')
+    if not download:
+        try:
+            s3.head_object(Bucket=bucket, Key=key)
+        except:
+            return None
+        return s3_path
+    
     try:
         s3.download_file(bucket, key, out_file)
     except:
