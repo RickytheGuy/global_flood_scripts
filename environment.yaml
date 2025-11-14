@@ -13,6 +13,7 @@ dependencies:
   - psutil
   - pyarrow
   - remotezip
+  - s3fs
   - s5cmd
   - shapely
   - tqdm
@@ -20,5 +21,6 @@ dependencies:
   - zarr
   - pip:
     - asf-search
+    - botocore
     - git+https://github.com/MikeFHS/automated-rating-curve.git
     - git+https://github.com/RickytheGuy/curve2flood.git
