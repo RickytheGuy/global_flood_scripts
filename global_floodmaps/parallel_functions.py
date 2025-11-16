@@ -1392,7 +1392,13 @@ def warp_to_epsg(dem: str):
     os.remove(dem)
     shutil.move(out_file, dem)  # Replace the original DEM with the reprojected one
 
-def _tile_helper(output_dir: str, bucket: str, key: str, overwrite: bool = False, download: bool = True, s3_cache: set = set()):
+_global_s3 = None
+
+def init_s3():
+    global _global_s3
+    _global_s3 = boto3.client("s3")
+
+def _tile_helper(output_dir: str, bucket: str, key: str, overwrite: bool = False, download: bool = True, s3_cache: set = None):
     s3_path = f"/vsis3/{bucket}/{key}"
     out_file = os.path.join(output_dir, os.path.basename(s3_path))
     if not overwrite and opens_right(out_file):
@@ -1403,28 +1409,28 @@ def _tile_helper(output_dir: str, bucket: str, key: str, overwrite: bool = False
             return s3_path
         return None
 
-    s3 = boto3.client('s3')
+    global _global_s3
     try:
-        s3.download_file(bucket, key, out_file)
+        _global_s3.download_file(bucket, key, out_file)
     except:
         return None
     
     return out_file
-
-def download_fabdem_tile(bbox: list[int], output_dir: str, overwrite: bool = False, download: bool = True, s3_cache: set = set()):
+    
+def download_fabdem_tile(bbox: list[int], output_dir: str, overwrite: bool = False, download: bool = True, s3_cache: set = None):
     minx, miny, maxx, maxy = bbox
     bucket, key = get_s3_fabdem_path(minx, miny)
     
     return _tile_helper(output_dir, bucket, key, overwrite, download, s3_cache)
 
-def download_alos_tile(bbox: list[int], output_dir: str, overwrite: bool = False, download: bool = True, s3_cache: set = set()):
+def download_alos_tile(bbox: list[int], output_dir: str, overwrite: bool = False, download: bool = True, s3_cache: set = None):
     minx, miny, maxx, maxy = bbox
     bucket = 's3://global-floodmaps'
     key = f'dems/alos/alos_{floor(minx)}_{floor(miny)}.tif'
     
     return _tile_helper(output_dir, bucket, key, overwrite, download, s3_cache)
 
-def download_tilezen_tile(bbox: list[int], output_dir: str, overwrite: bool = False, download: bool = True, s3_cache: set = set()):
+def download_tilezen_tile(bbox: list[int], output_dir: str, overwrite: bool = False, download: bool = True, s3_cache: set = None):
     minx, miny, maxx, maxy = bbox
     bucket = 's3://global-floodmaps'
     key = f'dems/tilezen/tilezen_{floor(minx)}_{floor(miny)}.tif'

@@ -17,7 +17,7 @@ from .parallel_functions import (
     start_unthrottled_pbar, download_flows, prepare_water_mask, prepare_inputs, 
     start_throttled_pbar, run_c2f_bathymetry, run_c2f_floodmaps, unbuffer_remove,
     majority_vote, download_tilezen_in_area, download_alos_in_area, 
-    download_fabdem_tile, download_alos_tile, download_tilezen_tile
+    download_fabdem_tile, download_alos_tile, download_tilezen_tile, init_s3
 )
 
 from .utility_functions import (
@@ -227,7 +227,7 @@ class FloodManager:
         start_throttled_pbar(ex, run_arc, f"Running ARC for {dem_type} ({limit})", arc_inputs, limit, 
                              s3_dir=self.s3_dir, s3_cache=self.s3_cache, dem_type=dem_type, overwrite=self.overwrite_vdts)
 
-        limit = _get_num_processes({'fabdem': 4.85, 'alos': 6.2, 'tilezen': 5.07}.get(dem_type, 6))
+        limit = _get_num_processes({'fabdem': 4.85, 'alos': 6.4, 'tilezen': 5.07}.get(dem_type, 6))
         start_throttled_pbar(ex, run_c2f_bathymetry, f"Preparing burned DEMs for {dem_type} ({limit})", 
                                burned_inputs, limit, s3_dir=self.s3_dir, s3_cache=self.s3_cache, dem_type=dem_type, overwrite=self.overwrite_burned_dems)
 
@@ -336,7 +336,7 @@ class FloodManager:
             'tilezen': download_tilezen_tile
         }[type]
 
-        with ProcessPoolExecutor(min((os.cpu_count() * 2) - 4, len(args))) as ex:
+        with ProcessPoolExecutor(min((os.cpu_count() * 2) - 4, len(args)), initializer=init_s3) as ex:
             dems = start_unthrottled_pbar(ex, download_func, f"Downloading {type} DEMs", args, output_dir=output_dir,
                                           download=not no_download, overwrite=overwrite, s3_cache=self.s3_cache)
 
