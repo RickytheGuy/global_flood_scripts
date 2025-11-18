@@ -1,8 +1,6 @@
 import os
 import re
-from functools import partial
 
-import tqdm
 import pandas as pd
 import numpy as np
 from osgeo import gdal
@@ -10,8 +8,6 @@ from osgeo import gdal
 gdal.UseExceptions()
 os.environ["AWS_NO_SIGN_REQUEST"] = "YES"
 os.environ["AWS_S3_ENDPOINT"] = "s3.amazonaws.com"
-
-no_leave_pbar = partial(tqdm.tqdm, leave=False, position=1)
 
 def opens_right(path: str, read: bool = False) -> bool:
     if not os.path.exists(path):

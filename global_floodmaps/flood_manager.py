@@ -3,12 +3,12 @@ import os
 import glob
 import logging
 import subprocess
+import tempfile
 from itertools import chain
+import multiprocessing as mp
 from collections import defaultdict
-from concurrent.futures import ProcessPoolExecutor
 
 import s3fs
-import tqdm
 import pandas as pd
 from osgeo import gdal
 
@@ -17,7 +17,8 @@ from .parallel_functions import (
     start_unthrottled_pbar, download_flows, prepare_water_mask, prepare_inputs, 
     start_throttled_pbar, run_c2f_bathymetry, run_c2f_floodmaps, unbuffer_remove,
     majority_vote, download_tilezen_in_area, download_alos_in_area, 
-    download_fabdem_tile, download_alos_tile, download_tilezen_tile, init_s3
+    download_fabdem_tile, download_alos_tile, download_tilezen_tile, init_s3,
+    _init_s3_cache
 )
 
 from .utility_functions import (
@@ -128,10 +129,14 @@ class FloodManager:
         if self.s3_dir:
             if self.s3_dir.endswith('/'):
                 self.s3_dir = self.s3_dir[:-1]
+
             s3 = s3fs.S3FileSystem(anon=True)
             LOG.info(f"Building S3 cache for {self.s3_dir}...")
-            self.s3_cache = set(s3.glob(f"{self.s3_dir}/**"))
-            self.s3_cache = [f"/vsis3/{f}" for f in self.s3_cache]
+            s3_cache = set(s3.glob(f"{self.s3_dir}/**"))
+            s3_cache = [f"/vsis3/{f}" for f in s3_cache]
+            self._s3_temp_cache_file = tempfile.NamedTemporaryFile(delete=False)
+            with open(self._s3_temp_cache_file.name, 'w') as f:
+                f.writelines(s3_cache)
 
         if not bbox:
             self.bbox = (-180, -90, 180, 90)
@@ -168,7 +173,7 @@ class FloodManager:
         self.overwrite_landuse = overwrite_landuse
         self.overwrite_buffered_dems = overwrite_buffered_dems
 
-    def _run_one_dem_type(self, ex: ProcessPoolExecutor, dem_type: str):
+    def _run_one_dem_type(self, pool, dem_type: str):
         if dem_type in self.og_dem_dict:
             original_dems = self.og_dem_dict[dem_type]
         else:
@@ -176,14 +181,13 @@ class FloodManager:
 
         og_dems_filtered = get_dem_in_extent(self.bbox[0], self.bbox[1], self.bbox[2], self.bbox[3], original_dems, dem_type)
         buffered_dems = []
-        for buffered_dem in start_unthrottled_pbar(ex, 
+        for buffered_dem in start_unthrottled_pbar(pool, 
                                                    buffer_dem,
                                                    f"Buffering DEMs for {dem_type}",
                                                    og_dems_filtered,
                                                    dems=original_dems,
                                                    output_dir=self.output_dir,
                                                    s3_dir=self.s3_dir,
-                                                   s3_cache=self.s3_cache,
                                                    dem_type=dem_type,
                                                    buffer_distance=self.buffer_distance,
                                                    valid_tiles=self.valid_tiles,
@@ -193,48 +197,47 @@ class FloodManager:
                 buffered_dems.append(buffered_dem)
 
         limit = _get_num_processes({'fabdem': 8, 'alos': 9, 'tilezen': 8}.get(dem_type, 9))
-        stream_files = start_throttled_pbar(ex, rasterize_streams, f"Rasterizing streams for {dem_type} ({limit})", 
-                             buffered_dems, limit, dem_type=dem_type, s3_dir=self.s3_dir, s3_cache=self.s3_cache,
+        stream_files = start_throttled_pbar(pool, rasterize_streams, f"Rasterizing streams for {dem_type} ({limit})", 
+                             buffered_dems, limit, dem_type=dem_type, s3_dir=self.s3_dir,
                              bounds=self.stream_bounds, overwrite=self.overwrite_streams)
         stream_files = [f for f in stream_files if f]
         
         limit = _get_num_processes({'fabdem': 3.84, 'alos': 3.91, 'tilezen': 3.57}.get(dem_type, 4))
-        start_throttled_pbar(ex, warp_land_use, f"Warping land use for {dem_type} ({limit})", 
-                               buffered_dems, limit, dem_type=dem_type, s3_dir=self.s3_dir, s3_cache=self.s3_cache,
+        start_throttled_pbar(pool, warp_land_use, f"Warping land use for {dem_type} ({limit})", 
+                               buffered_dems, limit, dem_type=dem_type, s3_dir=self.s3_dir,
                                landcover_directory=self.landcover_directory, overwrite=self.overwrite_landuse)
 
-        start_throttled_pbar(ex, download_flows, f"Downloading flows for {dem_type} ({limit})", 
-                               stream_files, limit, rps=self.rps, s3_dir=self.s3_dir, s3_cache=self.s3_cache,
+        start_throttled_pbar(pool, download_flows, f"Downloading flows for {dem_type} ({limit})", 
+                               stream_files, limit, rps=self.rps, s3_dir=self.s3_dir,
                                forecast_date=self.forecast_date)
         
         mask_limit = _get_num_processes({'fabdem': 3.84, 'alos': 5, 'tilezen': 3.57}.get(dem_type, 4))
-        start_throttled_pbar(ex, prepare_water_mask, f"Preparing water masks for {dem_type} ({mask_limit})", 
-                               buffered_dems, mask_limit, dem_type=dem_type, s3_dir=self.s3_dir, s3_cache=self.s3_cache)
+        start_throttled_pbar(pool, prepare_water_mask, f"Preparing water masks for {dem_type} ({mask_limit})", 
+                               buffered_dems, mask_limit, dem_type=dem_type, s3_dir=self.s3_dir)
 
-        outputs = start_throttled_pbar(ex, prepare_inputs, f"Preparing input files for {dem_type} ({limit})", 
+        outputs = start_throttled_pbar(pool, prepare_inputs, f"Preparing input files for {dem_type} ({limit})", 
                                buffered_dems, limit, dem_type=dem_type, mannings_table=self.mannings_table, 
                                rps=self.rps, forecast_date=self.forecast_date, overwrite_arc=self.overwrite_vdts,
                                overwrite_c2f_bathymetry=self.overwrite_burned_dems,
                                overwrite_c2f_floodmap=self.overwrite_floodmaps, arc_args=self.arc_args, 
                                c2f_bathymetry_args=self.c2f_bathymetry_args, 
-                               c2f_floodmap_args=self.c2f_floodmap_args,
-                               s3_dir=self.s3_dir, s3_cache=self.s3_cache)
+                               c2f_floodmap_args=self.c2f_floodmap_args)
         arc_inputs = list(chain.from_iterable([i[0] for i in outputs if i[0]]))
         burned_inputs = list(chain.from_iterable([i[1] for i in outputs if i[1]]))
         floodmap_inputs = list(chain.from_iterable([i[2] for i in outputs if i[2]]))
 
         limit = _get_num_processes({'fabdem': 1.7, 'alos': 3.5, 'tilezen': 3.5}.get(dem_type, 4))
-        start_throttled_pbar(ex, run_arc, f"Running ARC for {dem_type} ({limit})", arc_inputs, limit, 
-                             s3_dir=self.s3_dir, s3_cache=self.s3_cache, dem_type=dem_type, overwrite=self.overwrite_vdts)
+        start_throttled_pbar(pool, run_arc, f"Running ARC for {dem_type} ({limit})", arc_inputs, limit, 
+                             s3_dir=self.s3_dir, dem_type=dem_type, overwrite=self.overwrite_vdts)
 
         limit = _get_num_processes({'fabdem': 4.85, 'alos': 6.4, 'tilezen': 5.07}.get(dem_type, 6))
-        start_throttled_pbar(ex, run_c2f_bathymetry, f"Preparing burned DEMs for {dem_type} ({limit})", 
-                               burned_inputs, limit, s3_dir=self.s3_dir, s3_cache=self.s3_cache, dem_type=dem_type, overwrite=self.overwrite_burned_dems)
+        start_throttled_pbar(pool, run_c2f_bathymetry, f"Preparing burned DEMs for {dem_type} ({limit})", 
+                               burned_inputs, limit, s3_dir=self.s3_dir, dem_type=dem_type, overwrite=self.overwrite_burned_dems)
 
-        limit = _get_num_processes({'fabdem': 4.76, 'alos': 6, 'tilezen': 4}.get(dem_type, 6))
-        floodmaps = start_throttled_pbar(ex, run_c2f_floodmaps, f"Creating floodmaps for {dem_type} ({limit})", 
-                               floodmap_inputs, limit, s3_dir=self.s3_dir, s3_cache=self.s3_cache, dem_type=dem_type, overwrite=self.overwrite_floodmaps)
-        
+        limit = _get_num_processes({'fabdem': 4.76, 'alos': 3, 'tilezen': 4}.get(dem_type, 6))
+        floodmaps = start_throttled_pbar(pool, run_c2f_floodmaps, f"Creating floodmaps for {dem_type} ({limit})", 
+                               floodmap_inputs, limit, s3_dir=self.s3_dir, dem_type=dem_type, overwrite=self.overwrite_floodmaps)
+
         floodmap_dirs = defaultdict(list)
         for floodmap in floodmaps:
             floodmap_dir = os.path.dirname(floodmap)
@@ -242,7 +245,7 @@ class FloodManager:
         floodmap_dirs = list(floodmap_dirs.values())
 
         limit = _get_num_processes({'fabdem': 4.71, 'alos': 4.68, 'tilezen': 3.18}.get(dem_type, 5))
-        start_throttled_pbar(ex, unbuffer_remove, f"Unbuffering floodmaps for {dem_type} ({limit})", 
+        start_throttled_pbar(pool, unbuffer_remove, f"Unbuffering floodmaps for {dem_type} ({limit})", 
                              floodmap_dirs, limit, dem_type=dem_type, buffer_distance=self.buffer_distance, 
                              oceans_pq=self.oceans_pq)
         
@@ -250,12 +253,10 @@ class FloodManager:
 
     def run_all(self) -> 'FloodManager':
         run_majority_rps = bool(self.rps)
-        with ProcessPoolExecutor(os.cpu_count()) as ex, tqdm.tqdm(total=len(self.dem_names)+int(run_majority_rps)+1) as pbar:
-            floodmaps = []
+        floodmaps = []
+        with mp.Pool(os.cpu_count(), initializer=_init_s3_cache, initargs=(self._s3_temp_cache_file.name,)) as pool:
             for dem_type in self.dem_names:
-                pbar.set_description(f"Processing DEM type: {dem_type}")
-                floodmaps.extend(self._run_one_dem_type(ex, dem_type))
-                pbar.update(1)
+                floodmaps.extend(self._run_one_dem_type(pool, dem_type))
 
             if run_majority_rps:
                 floodmap_dirs = defaultdict(list)
@@ -264,18 +265,20 @@ class FloodManager:
                     if os.path.basename(floodmap) == f'flows_{",".join(map(str, self.rps))}.tif':
                         floodmap_dirs[floodmap_dir].append(floodmap)
                 floodmap_dirs = list(floodmap_dirs.values())
+                chunksize = max(1, len(floodmap_dirs) // (os.cpu_count() * 2))
 
-                start_unthrottled_pbar(ex, majority_vote, "Majority voting floodmaps across DEM types", floodmap_dirs,
-                                       s3_cache=self.s3_cache, s3_dir=self.s3_dir, overwrite=self.overwrite_majority_maps)
-                pbar.update(1)
+
+                start_unthrottled_pbar(pool, majority_vote, "Majority voting floodmaps across DEM types", floodmap_dirs,
+                                    s3_dir=self.s3_dir, overwrite=self.overwrite_majority_maps)
 
             floodmap_dirs = defaultdict(list)
             for floodmap in floodmaps:
                 floodmap_dir = os.path.dirname(floodmap)
                 if os.path.basename(floodmap) == 'bankfull.tif':
                     floodmap_dirs[floodmap_dir].append(floodmap)
-            start_unthrottled_pbar(ex, majority_vote, "Majority voting bankfull floodmaps across DEM types", floodmap_dirs, overwrite=self.overwrite_majority_maps)
-            pbar.update(1)
+
+        start_unthrottled_pbar(pool, majority_vote, "Majority voting bankfull floodmaps across DEM types", floodmap_dirs,
+                               s3_dir=self.s3_dir, overwrite=self.overwrite_majority_maps)
 
         return self
 
@@ -289,9 +292,10 @@ class FloodManager:
             LOG.warning("No Tilezen tiles to download in the specified bounding box.")
             return self
 
-        with ProcessPoolExecutor(min((os.cpu_count() * 2) - 4, len(args))) as ex:
-            dems = start_unthrottled_pbar(ex, download_tilezen_in_area, f"Downloading Tilezen DEMs", args, output_dir=output_dir,
+        with mp.Pool(min((os.cpu_count() * 2) - 4, len(args))) as pool:
+            dems = start_unthrottled_pbar(pool, download_tilezen_in_area, f"Downloading Tilezen DEMs", args, output_dir=output_dir,
                                    overwrite=overwrite, z=z_level)
+
         self.og_dem_dict['tilezen'] = dems
 
         return self
@@ -311,8 +315,8 @@ class FloodManager:
         if not os.path.exists(netrc_path):
             raise FileNotFoundError(f".netrc file not found in {home}. Please create one with your ASF credentials. It should look like:\n\nmachine urs.earthdata.nasa.gov\nlogin YOUR_USERNAME\npassword YOUR_PASSWORD\n")
 
-        with ProcessPoolExecutor(min((os.cpu_count() * 2) - 4, len(args))) as ex:
-            dems = start_unthrottled_pbar(ex, download_alos_in_area, f"Downloading ALOS DEMs", args, output_dir=output_dir,
+        with mp.Pool(min((os.cpu_count() * 2) - 4, len(args))) as pool:
+            dems = start_unthrottled_pbar(pool, download_alos_in_area, f"Downloading ALOS DEMs", args, output_dir=output_dir,
                                    overwrite=overwrite)
 
         self.og_dem_dict['alos'] = [d for d in dems if d]
@@ -336,9 +340,9 @@ class FloodManager:
             'tilezen': download_tilezen_tile
         }[type]
 
-        with ProcessPoolExecutor(min((os.cpu_count() * 2) - 4, len(args)), initializer=init_s3) as ex:
-            dems = start_unthrottled_pbar(ex, download_func, f"Downloading {type} DEMs", args, output_dir=output_dir,
-                                          download=not no_download, overwrite=overwrite, s3_cache=self.s3_cache)
+        with mp.Pool(min(int(os.cpu_count() * 1.5), len(args)), initializer=init_s3, initargs=(self._s3_temp_cache_file.name,)) as pool:
+            dems = start_unthrottled_pbar(pool, download_func, f"Downloading {type} DEMs", args, output_dir=output_dir,
+                                   download=not no_download, overwrite=overwrite)
 
         self.og_dem_dict[type] = [d for d in dems if d]
 

@@ -2,11 +2,11 @@ import os
 import glob
 import shutil
 import tempfile
-import traceback
 from math import floor
 from functools import partial
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from collections import deque
 
+import tqdm
 import boto3
 import psutil
 import numpy as np
@@ -24,7 +24,7 @@ from curve2flood import Curve2Flood_MainFunction
 from .utility_functions import (
     opens_right, get_dataset_info, convert_gt_to_bbox, is_tile_in_valid_tiles, 
     get_dem_in_extent, dem_to_dir, _dir, clean_stream_raster, get_linknos,
-    no_leave_pbar, lat_to_y, lon_to_x, get_s3_fabdem_path,
+    lat_to_y, lon_to_x, get_s3_fabdem_path,
     are_there_non_zero_in_raster, extract_base_path
 )
 from .logger import LOG
@@ -36,6 +36,18 @@ gdal.SetConfigOption('AWS_NO_SIGN_REQUEST', 'YES')
 FDC_DS = None
 RP_DS = None
 FC_DS = None
+S3_CACHE = set()
+_global_s3 = None
+
+def _init_s3_cache(temp_s3_cache: str):
+    global S3_CACHE
+    with open(temp_s3_cache, 'r') as f:
+        S3_CACHE = set(line.strip() for line in f.readlines())
+
+def init_s3(s3_dir):
+    global _global_s3
+    _global_s3 = boto3.client("s3")
+    _init_s3_cache(s3_dir)
 
 def _get_fdc() -> xr.Dataset:
     global FDC_DS
@@ -59,124 +71,39 @@ def _get_forecast(date: str) -> xr.Dataset:
         FC_DS = xr.open_zarr(f's3://geoglows-v2-forecasts/{date}.zarr', storage_options=STORAGE_OPTIONS)
     return FC_DS
 
-def unthrottled_map(executor: ProcessPoolExecutor, func, items):
-    """
-    Yield results from submitting func(item) for each item to the given executor,
-    submitting all tasks immediately (i.e., unthrottled) and yielding results as
-    they complete.
+def _unthrottled_map(pool, func, items):
+    for item in pool.imap_unordered(func, items):
+        yield item
 
-    Parameters
-    ----------
-    executor : concurrent.futures.Executor
-        An executor (typically concurrent.futures.ProcessPoolExecutor or
-        ThreadPoolExecutor) used to submit tasks. The executor must be running
-        and should not be shut down while iteration is in progress.
-    func : Callable[[Any], Any]
-        A callable that accepts a single argument (an element from `items`) and
-        returns a result. If you need to call a function with multiple
-        arguments, wrap them in a tuple and use a small wrapper callable.
-    items : Iterable[Any]
-        An iterable of inputs to pass to `func`. All items will be submitted to
-        the executor immediately; `items` may be consumed eagerly.
+def _throttled_map(pool, func, items, limit=None):
+    if limit is None:
+        limit = os.cpu_count()
 
-    Yields
-    ------
-    Any
-        The results returned by `func(item)`, yielded in the order that the
-        corresponding submitted tasks complete (completion order), not the
-        original order of `items`.
+    it = iter(items)
+    pending_deque = deque()
 
-    Raises
-    ------
-    Exception
-        If `func` raises an exception in a worker, that exception will be raised
-        when the corresponding future's result is retrieved during iteration.
-        Other exceptions from the executor/future machinery may also be raised
-        during iteration.
+    try:
+        for _ in range(limit):
+            item = next(it)
+            pending_deque.append(pool.apply_async(func, (item,)))
+    except StopIteration:
+        pass
 
-    Notes
-    -----
-    - This function uses an "unthrottled" submission strategy: it submits a
-      future for every item immediately. For very large iterables this may
-      overload the executor or exhaust system resources. Consider a throttled
-      approach (submitting a bounded number of tasks at a time) for large
-      workloads.
-    - Results are yielded as they become available (completion order). If you
-      require results in the same order as `items`, use a different mapping
-      utility that preserves order.
-    - The executor is not shut down by this function; managing the executor's
-      lifecycle is the caller's responsibility.
+    while pending_deque:
+        oldest_result = pending_deque.popleft()
+        yield oldest_result.get() 
 
-    Example
-    -------
-    with concurrent.futures.ProcessPoolExecutor() as exe:
-        for result in unthrottled_map(exe, my_function, my_items):
-            handle(result)
-    """
-    futures = {executor.submit(func, x): x for x in items}
-    for future in as_completed(futures):
-        yield future.result()
-
-def throttled_map(executor: ProcessPoolExecutor, func, items: list, limit: int = os.cpu_count()):
-    """
-    Throttle the submission of tasks to a ProcessPoolExecutor and yield once per completed task.
-
-    This generator submits at most `limit` tasks from `items` to `executor` at a time and yields a single
-    None value each time one of the submitted tasks completes. As each task finishes, if there are
-    remaining items, a new task is submitted so that up to `limit` tasks are in-flight until all items
-    have been submitted and completed.
-
-    Parameters
-    ----------
-    executor : concurrent.futures.ProcessPoolExecutor
-        Executor used to submit the tasks. Must support the submit() method.
-    func : Callable[[Any], Any]
-        Function to run in the executor for each item. It is called as func(item) for each element of
-        `items`. Note: this generator does not return the results of `func`.
-    items : Sequence
-        Sequence (e.g., list) of inputs; each element will be passed to `func` in turn.
-    limit : int, optional
-        Maximum number of tasks to have running concurrently. Defaults to os.cpu_count().
-
-    Yields
-    ------
-    None
-        One None is yielded for each completed task (i.e., once per item). Yields occur in the order
-        tasks complete, not in the order of `items`.
-
-    Notes
-    -----
-    - This helper is intended as a lightweight concurrency throttle; it does not return or expose task
-      results. If you need results or to observe exceptions raised by tasks, collect and call
-      future.result() on the futures yourself or adapt this implementation.
-    - Submissions (executor.submit) may raise (e.g., if the executor has been shut down); such errors
-      will propagate at submission time. Exceptions raised inside the tasks are stored on their futures
-      and are not raised by this generator (because it does not call future.result()).
-    - If `items` is empty, the generator yields nothing.
-    - The ordering of completion is non-deterministic and depends on task runtime.
-    """
-    futures = {executor.submit(func, x): x for x in items[:limit]}
-    next_idx = limit
-
-    while futures:
-        for future in as_completed(futures):
-            item = futures.pop(future)
-            try:
-                yield future.result()
-            except:
-                LOG.error("Error processing item: %s", item)
-                LOG.error(traceback.format_exc())
-                return
-            if next_idx < len(items):
-                new_future = executor.submit(func, items[next_idx])
-                futures[new_future] = items[next_idx]
-                next_idx += 1
+        try:
+            item = next(it)
+            pending_deque.append(pool.apply_async(func, (item,)))
+        except StopIteration:
+            pass
 
 def start_unthrottled_pbar(ex, func, desc: str, items: list, **func_kwargs):
-    return list(no_leave_pbar(unthrottled_map(ex, partial(func, **func_kwargs), items), total=len(items), desc=desc))
+    return list(tqdm.tqdm(_unthrottled_map(ex, partial(func, **func_kwargs), items), total=len(items), desc=desc))
 
 def start_throttled_pbar(ex, func, desc: str, items: list, limit: int, **func_kwargs):
-    return list(no_leave_pbar(throttled_map(ex, partial(func, **func_kwargs), items, limit), total=len(items), desc=desc))
+    return list(tqdm.tqdm(_throttled_map(ex, partial(func, **func_kwargs), items, limit), total=len(items), desc=desc))
 
 def _get_num_processes(n: float) -> int:
     """
@@ -196,7 +123,6 @@ def buffer_dem(dem: str,
                dem_type: str, 
                buffer_distance: float, 
                s3_dir: str = None,
-               s3_cache: set = None,
                valid_tiles: list[list[int]] = None, 
                as_vrt: bool = True,
                overwrite: bool = False) -> str:
@@ -250,7 +176,7 @@ def buffer_dem(dem: str,
 
     if s3_dir and not overwrite:
         s3_out_dem = f"{s3_dir.replace('s3://', '')}/{extract_base_path(output_dem)}"
-        if s3_out_dem in s3_cache:
+        if s3_out_dem in S3_CACHE:
             return s3_out_dem
         
     if as_vrt:
@@ -295,8 +221,7 @@ def rasterize_streams(dem: str,
                     bounds: dict[str, tuple[float, float, float, float]], 
                     min_stream_order: int = 1,
                     overwrite: bool = False,
-                    s3_dir: str = None,
-                    s3_cache: set = None):
+                    s3_dir: str = None,):
     """
     Rasterize vector stream layers into a GIS-aligned raster (streams.tif) matching a given DEM.
     This function creates a single-band GeoTIFF named "streams.tif" under the directory
@@ -327,7 +252,7 @@ def rasterize_streams(dem: str,
 
     if s3_dir and not overwrite:
         s3_stream_file = f"{s3_dir.replace('s3://', '')}/{extract_base_path(stream_file)}"
-        if s3_stream_file in s3_cache:
+        if s3_stream_file in S3_CACHE:
             return s3_stream_file
         
 
@@ -375,8 +300,7 @@ def warp_land_use(dem: str,
                   landcover_directory: str, 
                   save_vrt: bool = True,
                   overwrite: bool = False,
-                  s3_dir: str = None,
-                  s3_cache: set = None):
+                  s3_dir: str = None):
     """
     Generate or warp a land-use raster to match a target DEM's extent, resolution, and projection.
     This function constructs an output path for a land-use raster (land_use.tif) next to the
@@ -414,7 +338,7 @@ def warp_land_use(dem: str,
 
     if s3_dir and not overwrite:
         s3_lu_file = f"{s3_dir.replace('s3://', '')}/{extract_base_path(lu_file)}"
-        if s3_lu_file in s3_cache:
+        if s3_lu_file in S3_CACHE:
             return s3_lu_file
 
     if opens_right(lu_file) and not overwrite:
@@ -467,7 +391,6 @@ def download_flows(stream_file: str,
                    rps: list[int] = None,
                    forecast_date: str = None,
                    s3_dir: str = None,
-                   s3_cache: set = None,
                    overwrite: bool = False):
     """
     Download and prepare flow and forecast CSV files for a given stream network file.
@@ -540,7 +463,7 @@ def download_flows(stream_file: str,
         if s3_dir and not overwrite:
             s3_bmf = f"{s3_dir.replace('s3://', '')}/{extract_base_path(bmf)}"
             s3_bf_file = f"{s3_dir.replace('s3://', '')}/{extract_base_path(bf_file)}"
-            if s3_bmf in s3_cache and s3_bf_file in s3_cache:
+            if s3_bmf in S3_CACHE and s3_bf_file in S3_CACHE:
                 return
             
         os.makedirs(flow_file_dir, exist_ok=True)
@@ -572,7 +495,7 @@ def download_flows(stream_file: str,
     if rps and (not os.path.exists(flow_file) or not open(flow_file).readline().startswith('river_id')) or overwrite:
         if s3_dir and not overwrite:
             s3_flow_file = f"{s3_dir.replace('s3://', '')}/{extract_base_path(flow_file)}"
-            if s3_flow_file in s3_cache:
+            if s3_flow_file in S3_CACHE:
                 return
             
         if linknos is None:
@@ -595,7 +518,7 @@ def download_flows(stream_file: str,
     if forecast_date and (not os.path.exists(forecast_file) or not open(forecast_file).readline().startswith('river_id') or overwrite):
         if s3_dir and not overwrite:
             s3_forecast_file = f"{s3_dir.replace('s3://', '')}/{extract_base_path(forecast_file)}"
-            if s3_forecast_file in s3_cache:
+            if s3_forecast_file in S3_CACHE:
                 return
             
         if linknos is None:
@@ -619,8 +542,7 @@ def prepare_water_mask(dem: str,
                        dem_type: str, 
                        water_value: int = 80,
                        overwrite: bool = False,
-                       s3_dir: str = None,
-                       s3_cache: set = None):
+                       s3_dir: str = None):
     """
     Prepare a binary water mask GeoTIFF from a land use raster.
     The function locates an "inputs={dem_type}" subdirectory relative to the directory
@@ -668,7 +590,7 @@ def prepare_water_mask(dem: str,
 
     if s3_dir and not overwrite:
         s3_water_mask = f"{s3_dir.replace('s3://', '')}/{extract_base_path(water_mask)}"
-        if s3_water_mask in s3_cache:
+        if s3_water_mask in S3_CACHE:
             return s3_water_mask
         
     if not overwrite and opens_right(water_mask, True):
@@ -694,9 +616,7 @@ def prepare_inputs(dem: str,
                    overwrite_c2f_floodmap: bool = False,
                    arc_args: dict = {}, 
                    c2f_bathymetry_args: dict = {}, 
-                   c2f_floodmap_args: dict = {},
-                   s3_dir: str = None,
-                   s3_cache: set = None):
+                   c2f_floodmap_args: dict = {}):
     """
     Prepare input files and directory structure required by ARC and Curve2Flood workflows.
     This function inspects provided flow metadata, computes empirical geometry limits,
@@ -785,7 +705,7 @@ def prepare_inputs(dem: str,
     output[0].append(main_input_file)
     max_q = pd.read_csv(bmf, usecols=['max'], na_filter=False).values.max() # This is the fastest way to get the maximum value
     x_sect_dist = int(min(7500, (5e7 / max_q) + 4000 + (0.0001 * max_q)) / 2) # Divided by two, because this eq is based on top width, and x_sect_dist = 0.5 * tw
-    if not opens_right(main_input_file) or overwrite_arc:
+    if not opens_right(vdt) or overwrite_arc:
         with open(main_input_file, 'w') as f:
             f.write("# Input files - Required\n")
             f.write(f"DEM_File\t{dem}\n")
@@ -889,8 +809,7 @@ def prepare_inputs(dem: str,
 def run_arc(input_file: str, 
             dem_type: str, 
             overwrite: bool = False,
-            s3_dir: str = None,
-            s3_cache: set = None):
+            s3_dir: str = None):
     """
     Run the ARC model.
 
@@ -909,12 +828,13 @@ def run_arc(input_file: str,
 
     if s3_dir and not overwrite:
         s3_vdt = f"{s3_dir.replace('s3://', '')}/{extract_base_path(vdt)}"
-        if s3_vdt in s3_cache:
+        if s3_vdt in S3_CACHE:
             return
 
     if opens_right(vdt) and not overwrite:
         return
     
+    print("Running")
     try:
         Arc(input_file, quiet=True).run()
     except:
@@ -924,8 +844,7 @@ def run_arc(input_file: str,
 def run_c2f_bathymetry(input_file: str, 
                        dem_type: str, 
                        overwrite: bool = False,
-                       s3_dir: str = None,
-                       s3_cache: set = None):
+                       s3_dir: str = None):
     """
     Run the Curve2Flood bathymetry generation.
     Parameters
@@ -945,7 +864,7 @@ def run_c2f_bathymetry(input_file: str,
     if s3_dir and not overwrite:
         s3_vdt = f"{s3_dir.replace('s3://', '')}/{extract_base_path(vdt)}"
         s3_burned_dem = f"{s3_dir.replace('s3://', '')}/{extract_base_path(burned_dem)}"
-        if s3_burned_dem in s3_cache and s3_vdt in s3_cache:
+        if s3_burned_dem in S3_CACHE and s3_vdt in S3_CACHE:
             return
 
     if (not opens_right(burned_dem) or overwrite) and os.path.exists(vdt):
@@ -960,8 +879,7 @@ def run_c2f_bathymetry(input_file: str,
 def run_c2f_floodmaps(input_file: str, 
                       dem_type: str, 
                       overwrite: bool = False,
-                      s3_dir: str = None,
-                      s3_cache: set = None):
+                      s3_dir: str = None):
     """
     Run the Curve2Flood floodmap generation.
     Parameters
@@ -981,7 +899,7 @@ def run_c2f_floodmaps(input_file: str,
     if s3_dir and not overwrite:
         s3_vdt = f"{s3_dir.replace('s3://', '')}/{extract_base_path(vdt)}"
         s3_floodmap = f"{s3_dir.replace('s3://', '')}/{extract_base_path(floodmap)}"
-        if s3_floodmap in s3_cache and s3_vdt in s3_cache:
+        if s3_floodmap in S3_CACHE and s3_vdt in S3_CACHE:
             return s3_floodmap
 
     if (not opens_right(floodmap) or overwrite) and os.path.exists(vdt) :
@@ -1218,8 +1136,7 @@ def unbuffer_remove(floodmaps: list[str], dem_type: str, buffer_distance: float,
 
 def majority_vote(floodmap_files: list[str], 
                   overwrite: bool = False,
-                  s3_dir: str = None,
-                  s3_cache: set = None):
+                  s3_dir: str = None):
     """
     Compute a majority-vote composite flood map from multiple \raster files and save
     the result as a Cloud Optimized GeoTIFF, in the
@@ -1243,7 +1160,7 @@ def majority_vote(floodmap_files: list[str],
 
     if s3_dir and not overwrite:
         s3_output_file = f"{s3_dir.replace('s3://', '')}/{extract_base_path(output_file)}"
-        if s3_output_file in s3_cache:
+        if s3_output_file in S3_CACHE:
             return
         
     if opens_right(output_file) and not overwrite:
@@ -1392,20 +1309,14 @@ def warp_to_epsg(dem: str):
     os.remove(dem)
     shutil.move(out_file, dem)  # Replace the original DEM with the reprojected one
 
-_global_s3 = None
-
-def init_s3():
-    global _global_s3
-    _global_s3 = boto3.client("s3")
-
-def _tile_helper(output_dir: str, bucket: str, key: str, overwrite: bool = False, download: bool = True, s3_cache: set = None):
+def _tile_helper(output_dir: str, bucket: str, key: str, overwrite: bool = False, download: bool = True):
     s3_path = f"/vsis3/{bucket}/{key}"
     out_file = os.path.join(output_dir, os.path.basename(s3_path))
     if not overwrite and opens_right(out_file):
         return out_file
     
     if not download:
-        if s3_path in s3_cache:
+        if s3_path in S3_CACHE:
             return s3_path
         return None
 
@@ -1417,22 +1328,22 @@ def _tile_helper(output_dir: str, bucket: str, key: str, overwrite: bool = False
     
     return out_file
     
-def download_fabdem_tile(bbox: list[int], output_dir: str, overwrite: bool = False, download: bool = True, s3_cache: set = None):
+def download_fabdem_tile(bbox: list[int], output_dir: str, overwrite: bool = False, download: bool = True):
     minx, miny, maxx, maxy = bbox
     bucket, key = get_s3_fabdem_path(minx, miny)
     
-    return _tile_helper(output_dir, bucket, key, overwrite, download, s3_cache)
+    return _tile_helper(output_dir, bucket, key, overwrite, download)
 
-def download_alos_tile(bbox: list[int], output_dir: str, overwrite: bool = False, download: bool = True, s3_cache: set = None):
+def download_alos_tile(bbox: list[int], output_dir: str, overwrite: bool = False, download: bool = True):
     minx, miny, maxx, maxy = bbox
     bucket = 's3://global-floodmaps'
     key = f'dems/alos/alos_{floor(minx)}_{floor(miny)}.tif'
     
-    return _tile_helper(output_dir, bucket, key, overwrite, download, s3_cache)
+    return _tile_helper(output_dir, bucket, key, overwrite, download)
 
-def download_tilezen_tile(bbox: list[int], output_dir: str, overwrite: bool = False, download: bool = True, s3_cache: set = None):
+def download_tilezen_tile(bbox: list[int], output_dir: str, overwrite: bool = False, download: bool = True):
     minx, miny, maxx, maxy = bbox
     bucket = 's3://global-floodmaps'
     key = f'dems/tilezen/tilezen_{floor(minx)}_{floor(miny)}.tif'
     
-    return _tile_helper(output_dir, bucket, key, overwrite, download, s3_cache)
+    return _tile_helper(output_dir, bucket, key, overwrite, download)
