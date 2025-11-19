@@ -834,7 +834,6 @@ def run_arc(input_file: str,
     if opens_right(vdt) and not overwrite:
         return
     
-    print("Running")
     try:
         Arc(input_file, quiet=True).run()
     except:
