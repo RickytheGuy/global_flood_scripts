@@ -133,7 +133,7 @@ class FloodManager:
             s3 = s3fs.S3FileSystem(anon=True)
             LOG.info(f"Building S3 cache for {self.s3_dir}...")
             s3_cache = set(s3.glob(f"{self.s3_dir}/**"))
-            s3_cache = [f"/vsis3/{f}" for f in s3_cache]
+            s3_cache = [f"/vsis3/{f}{os.linesep}" for f in s3_cache]
             self._s3_temp_cache_file = tempfile.NamedTemporaryFile(delete=False)
             with open(self._s3_temp_cache_file.name, 'w') as f:
                 f.writelines(s3_cache)
