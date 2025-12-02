@@ -634,7 +634,8 @@ def prepare_inputs(dem: str,
                    overwrite_c2f_floodmap: bool = False,
                    arc_args: dict = {}, 
                    c2f_bathymetry_args: dict = {}, 
-                   c2f_floodmap_args: dict = {}):
+                   c2f_floodmap_args: dict = {},
+                   s3_dir: str = None):
     """
     Prepare input files and directory structure required by ARC and Curve2Flood workflows.
     This function inspects provided flow metadata, computes empirical geometry limits,
@@ -700,8 +701,18 @@ def prepare_inputs(dem: str,
     """
     out_dir = _dir(dem, 2)
     stream_file = os.path.join(out_dir, f'inputs={dem_type}', 'streams.tif')
+    if not os.path.exists(stream_file):
+        if s3_dir:
+            s3_stream_file = f"{s3_dir.replace('s3://', '/vsis3/')}/{extract_base_path(stream_file)}"
+            if s3_stream_file in S3_CACHE:
+                stream_file = s3_stream_file
     
     bmf = os.path.join(_dir(dem, 2), 'flow_files', 'bmf.csv')
+    if not os.path.exists(bmf):
+        if s3_dir:
+            s3_bmf = f"{s3_dir.replace('s3://', '/vsis3/')}/{extract_base_path(bmf)}"
+            if s3_bmf in S3_CACHE:
+                bmf = s3_bmf
 
     inputs_dir = os.path.join(out_dir, f'inputs={dem_type}')
     vdt_dir = os.path.join(out_dir, 'vdts')
@@ -710,9 +721,26 @@ def prepare_inputs(dem: str,
     os.makedirs(vdt_dir, exist_ok=True)
 
     vdt = os.path.join(vdt_dir, f'vdt={dem_type}.parquet')
+    if not os.path.exists(vdt):
+        if s3_dir:
+            s3_vdt = f"{s3_dir.replace('s3://', '/vsis3/')}/{extract_base_path(vdt)}"
+            if s3_vdt in S3_CACHE:
+                vdt = s3_vdt
+
     bathy = os.path.join(bathy_dir, f'bathy={dem_type}.tif')
     land_use = os.path.join(inputs_dir, 'land_use.tif')
+    if not os.path.exists(land_use):
+        if s3_dir:
+            s3_land_use = f"{s3_dir.replace('s3://', '/vsis3/')}/{extract_base_path(land_use)}"
+            if s3_land_use in S3_CACHE:
+                land_use = s3_land_use
+
     bmf = os.path.join(out_dir, 'flow_files', 'bmf.csv')
+    if not os.path.exists(bmf):
+        if s3_dir:
+            s3_bmf = f"{s3_dir.replace('s3://', '/vsis3/')}/{extract_base_path(bmf)}"
+            if s3_bmf in S3_CACHE:
+                bmf = s3_bmf
     main_input_file = os.path.join(inputs_dir, f'inputs=arc.txt')
 
     output = [[], [], []]
@@ -764,10 +792,26 @@ def prepare_inputs(dem: str,
     max_tw_bankfull = max_tw / 4
 
     burned_dem = os.path.join(bathy_dem_dir, f'dem_burned={dem_type}.tif')
+    if not os.path.exists(burned_dem):
+        if s3_dir:
+            s3_burned_dem = f"{s3_dir.replace('s3://', '/vsis3/')}/{extract_base_path(burned_dem)}"
+            if s3_burned_dem in S3_CACHE:
+                burned_dem = s3_burned_dem
+
     main_input_file = os.path.join(inputs_dir, f'inputs=burned.txt')
     floodmap = os.path.join(floodmaps_dir, f'bankfull.tif')
     bf_file = os.path.join(out_dir, 'flow_files', 'baseflow.csv')
+    if not os.path.exists(bf_file):
+        if s3_dir:
+            s3_bf_file = f"{s3_dir.replace('s3://', '/vsis3/')}/{extract_base_path(bf_file)}"
+            if s3_bf_file in S3_CACHE:
+                bf_file = s3_bf_file
     water_mask = os.path.join(inputs_dir, 'water_mask.tif')
+    if not os.path.exists(water_mask):
+        if s3_dir:
+            s3_water_mask = f"{s3_dir.replace('s3://', '/vsis3/')}/{extract_base_path(water_mask)}"
+            if s3_water_mask in S3_CACHE:
+                water_mask = s3_water_mask
 
     output[1].append(main_input_file)
     if not opens_right(burned_dem) or overwrite_c2f_bathymetry:
@@ -803,7 +847,19 @@ def prepare_inputs(dem: str,
 
     for name in names:
         flow_file = os.path.join(out_dir, 'flow_files', f'{name}.csv')
+        if not os.path.exists(flow_file):
+            if s3_dir:
+                s3_flow_file = f"{s3_dir.replace('s3://', '/vsis3/')}/{extract_base_path(flow_file)}"
+                if s3_flow_file in S3_CACHE:
+                    flow_file = s3_flow_file
+                    
         floodmap = os.path.join(floodmaps_dir, f"{name}.tif")
+        if not os.path.exists(floodmap):
+            if s3_dir:
+                s3_floodmap = f"{s3_dir.replace('s3://', '/vsis3/')}/{extract_base_path(floodmap)}"
+                if s3_floodmap in S3_CACHE:
+                    floodmap = s3_floodmap
+
         main_input_file = os.path.join(inputs_dir, f"inputs={name}.txt")
         output[2].append(main_input_file)
 

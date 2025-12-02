@@ -235,7 +235,7 @@ class FloodManager:
                                overwrite_c2f_bathymetry=self.overwrite_burned_dems,
                                overwrite_c2f_floodmap=self.overwrite_floodmaps, arc_args=self.arc_args, 
                                c2f_bathymetry_args=self.c2f_bathymetry_args, 
-                               c2f_floodmap_args=self.c2f_floodmap_args)
+                               c2f_floodmap_args=self.c2f_floodmap_args, s3_dir=self.s3_dir)
         arc_inputs = list(chain.from_iterable([i[0] for i in outputs if i[0]]))
         arc_inputs = [i for i in arc_inputs if i not in self.blacklisted_files]
         burned_inputs = list(chain.from_iterable([i[1] for i in outputs if i[1]]))
