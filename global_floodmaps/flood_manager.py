@@ -23,7 +23,7 @@ from .parallel_functions import (
 
 from .utility_functions import (
     filter_files_in_extent_by_lat_lon_dirs, get_dem_in_extent, generate_bounding_args,
-    extract_base_path
+    extract_base_path, opens_right
 )
 
 from ._constants import DEFAULT_TILES_FILE, STREAM_BOUNDS_FILE
@@ -41,6 +41,7 @@ class FloodManager:
                  streamlines_directory: str,
                  oceans_pq: str,
                  s3_dir: str = None,
+                 s3_dems_dir: str = None,
                  bbox: tuple[float, float, float, float] = None,
                  number_of_tiles: int = None,
                  offset: int = 0,
@@ -133,6 +134,11 @@ class FloodManager:
             s3 = s3fs.S3FileSystem(anon=True)
             LOG.info(f"Building S3 cache for {self.s3_dir}...")
             s3_cache = set(s3.glob(f"{self.s3_dir}/**"))
+            if s3_dems_dir:
+                if s3_dems_dir.endswith('/'):
+                    s3_dems_dir = s3_dems_dir[:-1]
+                add = set(s3.glob(f"{s3_dems_dir}/**"))
+                s3_cache.update(add)
             s3_cache = [f"/vsis3/{f}{os.linesep}" for f in s3_cache]
             self._s3_temp_cache_file = tempfile.NamedTemporaryFile(delete=False)
             with open(self._s3_temp_cache_file.name, 'w') as f:
