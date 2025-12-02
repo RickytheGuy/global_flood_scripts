@@ -18,7 +18,7 @@ from .parallel_functions import (
     start_throttled_pbar, run_c2f_bathymetry, run_c2f_floodmaps, unbuffer_remove,
     majority_vote, download_tilezen_in_area, download_alos_in_area, 
     download_fabdem_tile, download_alos_tile, download_tilezen_tile, init_s3,
-    _init_s3_cache
+    _init_s3_cache, _dir
 )
 
 from .utility_functions import (
@@ -179,6 +179,14 @@ class FloodManager:
         self.overwrite_landuse = overwrite_landuse
         self.overwrite_buffered_dems = overwrite_buffered_dems
 
+        self.blacklist_file = os.path.join(os.path.dirname(__file__), 'data', '.blacklisted')
+        if os.path.exists(self.blacklist_file):
+            with open(self.blacklist_file, 'r') as f:
+                self.blacklisted_files = set(line.strip() for line in f if line.strip())
+        else:
+            self.blacklisted_files = set()
+
+
     def _run_one_dem_type(self, pool, dem_type: str):
         if dem_type in self.og_dem_dict:
             original_dems = self.og_dem_dict[dem_type]
@@ -202,7 +210,7 @@ class FloodManager:
             if buffered_dem:
                 buffered_dems.append(buffered_dem)
 
-        limit = _get_num_processes({'fabdem': 8, 'alos': 9, 'tilezen': 8}.get(dem_type, 9))
+        limit = _get_num_processes({'fabdem': 8, 'alos': 9, 'tilezen': 4}.get(dem_type, 9))
         stream_files = start_throttled_pbar(pool, rasterize_streams, f"Rasterizing streams for {dem_type} ({limit})", 
                              buffered_dems, limit, dem_type=dem_type, s3_dir=self.s3_dir,
                              bounds=self.stream_bounds, overwrite=self.overwrite_streams)
@@ -229,12 +237,22 @@ class FloodManager:
                                c2f_bathymetry_args=self.c2f_bathymetry_args, 
                                c2f_floodmap_args=self.c2f_floodmap_args)
         arc_inputs = list(chain.from_iterable([i[0] for i in outputs if i[0]]))
+        arc_inputs = [i for i in arc_inputs if i not in self.blacklisted_files]
         burned_inputs = list(chain.from_iterable([i[1] for i in outputs if i[1]]))
         floodmap_inputs = list(chain.from_iterable([i[2] for i in outputs if i[2]]))
 
+
         limit = _get_num_processes({'fabdem': 1.7, 'alos': 3.5, 'tilezen': 3.5}.get(dem_type, 4))
-        start_throttled_pbar(pool, run_arc, f"Running ARC for {dem_type} ({limit})", arc_inputs, limit, 
+        files_to_blacklist = start_throttled_pbar(pool, run_arc, f"Running ARC for {dem_type} ({limit})", arc_inputs, limit, 
                              s3_dir=self.s3_dir, dem_type=dem_type, overwrite=self.overwrite_vdts)
+        
+        if files_to_blacklist:
+            with open(self.blacklist_file, 'a') as f:
+                for file in files_to_blacklist:
+                    if file and file not in self.blacklisted_files:
+                        f.write(f"{file}\n")
+                        self.blacklisted_files.add(file)
+        
 
         limit = _get_num_processes({'fabdem': 4.85, 'alos': 6.4, 'tilezen': 5.07}.get(dem_type, 6))
         start_throttled_pbar(pool, run_c2f_bathymetry, f"Preparing burned DEMs for {dem_type} ({limit})", 
