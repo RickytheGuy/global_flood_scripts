@@ -290,9 +290,10 @@ class FloodManager:
                 for floodmap in floodmaps:
                     floodmap_dir = _dir(floodmap, 2)
                     
-                    if os.path.basename(floodmap) == f'flows_{",".join(map(str, self.rps))}.tif':
+                    if os.path.basename(floodmap) == f'flows_{",".join(map(str, self.rps))}.tif' and opens_right(floodmap):
                         floodmap_dirs[floodmap_dir].append(floodmap)
                 floodmap_dirs = list(floodmap_dirs.values())
+                floodmap_dirs = [f for f in floodmap_dirs if isinstance(f, list)]
 
                 start_unthrottled_pbar(pool, majority_vote, "Majority voting floodmaps across DEM types", floodmap_dirs,
                                     s3_dir=self.s3_dir, output_dir=self.output_dir, overwrite=self.overwrite_majority_maps)
@@ -300,8 +301,10 @@ class FloodManager:
             floodmap_dirs = defaultdict(list)
             for floodmap in floodmaps:
                 floodmap_dir = _dir(floodmap, 2)
-                if os.path.basename(floodmap) == 'bankfull.tif':
+                if os.path.basename(floodmap) == 'bankfull.tif' and opens_right(floodmap):
                     floodmap_dirs[floodmap_dir].append(floodmap)
+            floodmap_dirs = list(floodmap_dirs.values())
+            floodmap_dirs = [f for f in floodmap_dirs if isinstance(f, list)]
 
             start_unthrottled_pbar(pool, majority_vote, "Majority voting bankfull floodmaps across DEM types", floodmap_dirs,
                                 s3_dir=self.s3_dir, output_dir=self.output_dir, overwrite=self.overwrite_majority_maps)
