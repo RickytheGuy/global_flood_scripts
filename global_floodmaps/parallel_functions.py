@@ -5,6 +5,7 @@ import tempfile
 from math import floor
 from functools import partial
 from collections import deque
+import time
 
 import tqdm
 import boto3
@@ -80,22 +81,39 @@ def _throttled_map(pool, func, items, limit=None):
         limit = os.cpu_count()
 
     it = iter(items)
-    pending_deque = deque()
+    pending = deque()
 
     try:
         for _ in range(limit):
-            item = next(it)
-            pending_deque.append(pool.apply_async(func, (item,)))
+            pending.append(pool.apply_async(func, (next(it),)))
     except StopIteration:
         pass
 
-    while pending_deque:
-        oldest_result = pending_deque.popleft()
-        yield oldest_result.get() 
+    sleep_time = 0.01
+
+    while pending:
+        first = None
+
+        for r in pending:
+            if r.ready():
+                first = r
+                break
+
+        if first is None:
+            time.sleep(sleep_time)
+            sleep_time = min(sleep_time + 0.01, 1.0)
+            continue
+
+        sleep_time = 0.01
+        pending.remove(first)
 
         try:
-            item = next(it)
-            pending_deque.append(pool.apply_async(func, (item,)))
+            yield first.get()
+        except Exception as e:
+            yield e
+
+        try:
+            pending.append(pool.apply_async(func, (next(it),)))
         except StopIteration:
             pass
 
@@ -175,7 +193,7 @@ def buffer_dem(dem: str,
     output_dem = os.path.join(out_dir, 'dems', os.path.basename(dem))
 
     if s3_dir and not overwrite:
-        s3_out_dem = f"{s3_dir.replace('s3://', '')}/{extract_base_path(output_dem)}"
+        s3_out_dem = f"{s3_dir.replace('s3://', '/vsis3/')}/{extract_base_path(output_dem)}"
         if s3_out_dem in S3_CACHE:
             return s3_out_dem
         
@@ -251,7 +269,7 @@ def rasterize_streams(dem: str,
     stream_file = os.path.join(_dir(dem, 2), f'inputs={dem_type}', 'streams.tif')
 
     if s3_dir and not overwrite:
-        s3_stream_file = f"{s3_dir.replace('s3://', '')}/{extract_base_path(stream_file)}"
+        s3_stream_file = f"{s3_dir.replace('s3://', '/vsis3/')}/{extract_base_path(stream_file)}"
         if s3_stream_file in S3_CACHE:
             return s3_stream_file
         
@@ -337,7 +355,7 @@ def warp_land_use(dem: str,
     lu_file = os.path.join(_dir(dem, 2), f'inputs={dem_type}', 'land_use.tif')
 
     if s3_dir and not overwrite:
-        s3_lu_file = f"{s3_dir.replace('s3://', '')}/{extract_base_path(lu_file)}"
+        s3_lu_file = f"{s3_dir.replace('s3://', '/vsis3/')}/{extract_base_path(lu_file)}"
         if s3_lu_file in S3_CACHE:
             return s3_lu_file
 
@@ -461,8 +479,8 @@ def download_flows(stream_file: str,
     if not os.path.exists(bmf) or not open(bmf).readline().startswith('river_id')  or \
         not os.path.exists(bf_file) or not open(bf_file).readline().startswith('river_id') or overwrite:
         if s3_dir and not overwrite:
-            s3_bmf = f"{s3_dir.replace('s3://', '')}/{extract_base_path(bmf)}"
-            s3_bf_file = f"{s3_dir.replace('s3://', '')}/{extract_base_path(bf_file)}"
+            s3_bmf = f"{s3_dir.replace('s3://', '/vsis3/')}/{extract_base_path(bmf)}"
+            s3_bf_file = f"{s3_dir.replace('s3://', '/vsis3/')}/{extract_base_path(bf_file)}"
             if s3_bmf in S3_CACHE and s3_bf_file in S3_CACHE:
                 return
             
@@ -494,7 +512,7 @@ def download_flows(stream_file: str,
     flow_file = os.path.join(flow_file_dir, f"flows_{','.join(map(str, rps))}.csv")
     if rps and (not os.path.exists(flow_file) or not open(flow_file).readline().startswith('river_id')) or overwrite:
         if s3_dir and not overwrite:
-            s3_flow_file = f"{s3_dir.replace('s3://', '')}/{extract_base_path(flow_file)}"
+            s3_flow_file = f"{s3_dir.replace('s3://', '/vsis3/')}/{extract_base_path(flow_file)}"
             if s3_flow_file in S3_CACHE:
                 return
             
@@ -517,7 +535,7 @@ def download_flows(stream_file: str,
     forecast_file = os.path.join(flow_file_dir, f'{forecast_date}.csv')
     if forecast_date and (not os.path.exists(forecast_file) or not open(forecast_file).readline().startswith('river_id') or overwrite):
         if s3_dir and not overwrite:
-            s3_forecast_file = f"{s3_dir.replace('s3://', '')}/{extract_base_path(forecast_file)}"
+            s3_forecast_file = f"{s3_dir.replace('s3://', '/vsis3/')}/{extract_base_path(forecast_file)}"
             if s3_forecast_file in S3_CACHE:
                 return
             
@@ -589,7 +607,7 @@ def prepare_water_mask(dem: str,
     water_mask = os.path.join(inputs_dir, 'water_mask.tif')
 
     if s3_dir and not overwrite:
-        s3_water_mask = f"{s3_dir.replace('s3://', '')}/{extract_base_path(water_mask)}"
+        s3_water_mask = f"{s3_dir.replace('s3://', '/vsis3/')}/{extract_base_path(water_mask)}"
         if s3_water_mask in S3_CACHE:
             return s3_water_mask
         
@@ -706,6 +724,7 @@ def prepare_inputs(dem: str,
     max_q = pd.read_csv(bmf, usecols=['max'], na_filter=False).values.max() # This is the fastest way to get the maximum value
     x_sect_dist = int(min(7500, (5e7 / max_q) + 4000 + (0.0001 * max_q)) / 2) # Divided by two, because this eq is based on top width, and x_sect_dist = 0.5 * tw
     if not opens_right(vdt) or overwrite_arc:
+        os.makedirs(inputs_dir, exist_ok=True)
         with open(main_input_file, 'w') as f:
             f.write("# Input files - Required\n")
             f.write(f"DEM_File\t{dem}\n")
@@ -752,6 +771,7 @@ def prepare_inputs(dem: str,
 
     output[1].append(main_input_file)
     if not opens_right(burned_dem) or overwrite_c2f_bathymetry:
+        os.makedirs(inputs_dir, exist_ok=True)
         with open(main_input_file, 'w') as f:
             f.write("# Main input file for ARC and Curve2Flood\n\n")
 
@@ -788,6 +808,7 @@ def prepare_inputs(dem: str,
         output[2].append(main_input_file)
 
         if not opens_right(floodmap) or overwrite_c2f_floodmap:
+            os.makedirs(inputs_dir, exist_ok=True)
             with open(main_input_file, 'w') as f:
                 f.write("# Main input file for ARC and Curve2Flood\n\n")
                 f.write("\n# Input files - Required\n")
@@ -827,7 +848,7 @@ def run_arc(input_file: str,
     vdt = os.path.join(out_dir, 'vdts', f'vdt={dem_type}.parquet')
 
     if s3_dir and not overwrite:
-        s3_vdt = f"{s3_dir.replace('s3://', '')}/{extract_base_path(vdt)}"
+        s3_vdt = f"{s3_dir.replace('s3://', '/vsis3/')}/{extract_base_path(vdt)}"
         if s3_vdt in S3_CACHE:
             return
 
@@ -836,6 +857,8 @@ def run_arc(input_file: str,
     
     try:
         Arc(input_file, quiet=True).run()
+        if not os.path.exists(vdt):
+            return input_file 
     except:
         LOG.error("Error occurred while running ARC for %s", input_file)
         raise
@@ -861,8 +884,8 @@ def run_c2f_bathymetry(input_file: str,
     vdt = os.path.join(out_dir, 'vdts', f'vdt={dem_type}.parquet')
 
     if s3_dir and not overwrite:
-        s3_vdt = f"{s3_dir.replace('s3://', '')}/{extract_base_path(vdt)}"
-        s3_burned_dem = f"{s3_dir.replace('s3://', '')}/{extract_base_path(burned_dem)}"
+        s3_vdt = f"{s3_dir.replace('s3://', '/vsis3/')}/{extract_base_path(vdt)}"
+        s3_burned_dem = f"{s3_dir.replace('s3://', '/vsis3/')}/{extract_base_path(burned_dem)}"
         if s3_burned_dem in S3_CACHE and s3_vdt in S3_CACHE:
             return
 
@@ -896,8 +919,8 @@ def run_c2f_floodmaps(input_file: str,
     floodmap = os.path.join(out_dir, 'floodmaps', f'dem={dem_type}', os.path.basename(input_file).replace('inputs=', '').replace('.txt', '.tif'))
 
     if s3_dir and not overwrite:
-        s3_vdt = f"{s3_dir.replace('s3://', '')}/{extract_base_path(vdt)}"
-        s3_floodmap = f"{s3_dir.replace('s3://', '')}/{extract_base_path(floodmap)}"
+        s3_vdt = f"{s3_dir.replace('s3://', '/vsis3/')}/{extract_base_path(vdt)}"
+        s3_floodmap = f"{s3_dir.replace('s3://', '/vsis3/')}/{extract_base_path(floodmap)}"
         if s3_floodmap in S3_CACHE and s3_vdt in S3_CACHE:
             return s3_floodmap
 
@@ -1043,6 +1066,8 @@ def unbuffer_remove(floodmaps: list[str], dem_type: str, buffer_distance: float,
 
     # We assume these floodmaps cover the same area
     for floodmap in floodmaps:
+        if not os.path.exists(floodmap):
+            continue
         ds: gdal.Dataset = gdal.Open(floodmap)
         gt = ds.GetGeoTransform()
         proj = ds.GetProjection()
@@ -1158,14 +1183,14 @@ def majority_vote(floodmap_files: list[str],
     output_file = os.path.join(_dir(floodmap_files[0], 2), f'majority_vote_{os.path.basename(floodmap_files[0])}')
 
     if s3_dir and not overwrite:
-        s3_output_file = f"{s3_dir.replace('s3://', '')}/{extract_base_path(output_file)}"
+        s3_output_file = f"{s3_dir.replace('s3://', '/vsis3/')}/{extract_base_path(output_file)}"
         if s3_output_file in S3_CACHE:
             return
         
     if opens_right(output_file) and not overwrite:
         return
     
-    if len(floodmap_files) == 1:
+    if len(floodmap_files) == 1 and opens_right(floodmap_files[0]):
         # Just copy the file
         gdal.GetDriverByName("COG").CreateCopy(output_file, gdal.Open(floodmap_files[0]), options=['COMPRESS=ZSTD', 'PREDICTOR=2'])
         return
@@ -1180,6 +1205,8 @@ def majority_vote(floodmap_files: list[str],
 
 
     for rps in floodmap_files[1:]:
+        if not opens_right(rps):
+            continue
         options = gdal.WarpOptions(format='MEM', width=width, height=height, dstSRS=proj, resampleAlg='mode')
         rp_ds: gdal.Dataset = gdal.Warp('', rps, options=options)
         stacked_array.append(rp_ds.ReadAsArray())
@@ -1335,14 +1362,14 @@ def download_fabdem_tile(bbox: list[int], output_dir: str, overwrite: bool = Fal
 
 def download_alos_tile(bbox: list[int], output_dir: str, overwrite: bool = False, download: bool = True):
     minx, miny, maxx, maxy = bbox
-    bucket = 's3://global-floodmaps'
+    bucket = 'global-floodmaps'
     key = f'dems/alos/alos_{floor(minx)}_{floor(miny)}.tif'
     
     return _tile_helper(output_dir, bucket, key, overwrite, download)
 
 def download_tilezen_tile(bbox: list[int], output_dir: str, overwrite: bool = False, download: bool = True):
     minx, miny, maxx, maxy = bbox
-    bucket = 's3://global-floodmaps'
+    bucket = 'global-floodmaps'
     key = f'dems/tilezen/tilezen_{floor(minx)}_{floor(miny)}.tif'
     
     return _tile_helper(output_dir, bucket, key, overwrite, download)
