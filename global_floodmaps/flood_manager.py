@@ -187,7 +187,7 @@ class FloodManager:
             self.blacklisted_files = set()
 
 
-    def _run_one_dem_type(self, pool, dem_type: str):
+    def _run_one_dem_type(self, pool, dem_type: str) -> list[str]:
         if dem_type in self.og_dem_dict:
             original_dems = self.og_dem_dict[dem_type]
         else:
@@ -255,12 +255,15 @@ class FloodManager:
         
 
         limit = _get_num_processes({'fabdem': 4.85, 'alos': 6.4, 'tilezen': 5.07}.get(dem_type, 6))
-        start_throttled_pbar(pool, run_c2f_bathymetry, f"Preparing burned DEMs for {dem_type} ({limit})", 
+        bankfull_floodmaps = start_throttled_pbar(pool, run_c2f_bathymetry, f"Preparing burned DEMs for {dem_type} ({limit})", 
                                burned_inputs, limit, s3_dir=self.s3_dir, dem_type=dem_type, overwrite=self.overwrite_burned_dems)
+        bankfull_floodmaps = [f for f in bankfull_floodmaps if f]
 
         limit = _get_num_processes({'fabdem': 4.76, 'alos': 3, 'tilezen': 4}.get(dem_type, 6))
         floodmaps = start_throttled_pbar(pool, run_c2f_floodmaps, f"Creating floodmaps for {dem_type} ({limit})", 
                                floodmap_inputs, limit, s3_dir=self.s3_dir, dem_type=dem_type, overwrite=self.overwrite_floodmaps)
+        floodmaps = [f for f in floodmaps if f]
+        floodmaps.extend(bankfull_floodmaps)
 
         floodmap_dirs = defaultdict(list)
         for floodmap in floodmaps:
@@ -285,24 +288,23 @@ class FloodManager:
             if run_majority_rps:
                 floodmap_dirs = defaultdict(list)
                 for floodmap in floodmaps:
-                    floodmap_dir = os.path.dirname(floodmap)
+                    floodmap_dir = _dir(floodmap, 2)
+                    
                     if os.path.basename(floodmap) == f'flows_{",".join(map(str, self.rps))}.tif':
                         floodmap_dirs[floodmap_dir].append(floodmap)
                 floodmap_dirs = list(floodmap_dirs.values())
-                chunksize = max(1, len(floodmap_dirs) // (os.cpu_count() * 2))
-
 
                 start_unthrottled_pbar(pool, majority_vote, "Majority voting floodmaps across DEM types", floodmap_dirs,
-                                    s3_dir=self.s3_dir, overwrite=self.overwrite_majority_maps)
+                                    s3_dir=self.s3_dir, output_dir=self.output_dir, overwrite=self.overwrite_majority_maps)
 
             floodmap_dirs = defaultdict(list)
             for floodmap in floodmaps:
-                floodmap_dir = os.path.dirname(floodmap)
+                floodmap_dir = _dir(floodmap, 2)
                 if os.path.basename(floodmap) == 'bankfull.tif':
                     floodmap_dirs[floodmap_dir].append(floodmap)
 
-        start_unthrottled_pbar(pool, majority_vote, "Majority voting bankfull floodmaps across DEM types", floodmap_dirs,
-                               s3_dir=self.s3_dir, overwrite=self.overwrite_majority_maps)
+            start_unthrottled_pbar(pool, majority_vote, "Majority voting bankfull floodmaps across DEM types", floodmap_dirs,
+                                s3_dir=self.s3_dir, output_dir=self.output_dir, overwrite=self.overwrite_majority_maps)
 
         return self
 

@@ -338,4 +338,6 @@ def are_there_non_zero_in_raster(raster_path: str) -> bool:
 
 def extract_base_path(path: str) -> str:
     match = re.search(r'(lon=[^\\\/]+[\\\/].*)', path)
+    if not match:
+        raise ValueError(f"Could not extract base path from {path}")
     return match.group(1).replace('\\', '/')

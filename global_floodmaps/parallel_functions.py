@@ -937,22 +937,27 @@ def run_c2f_bathymetry(input_file: str,
     out_dir = _dir(input_file, 2)
 
     burned_dem = os.path.join(out_dir, 'burned_dems', f'dem_burned={dem_type}.tif')
-    vdt = os.path.join(out_dir, 'vdts', f'vdt={dem_type}.parquet')
+    bankfull_floodmap = os.path.join(out_dir, 'floodmaps', f'dem={dem_type}', 'bankfull.tif')
 
     if s3_dir and not overwrite:
-        s3_vdt = f"{s3_dir.replace('s3://', '/vsis3/')}/{extract_base_path(vdt)}"
-        s3_burned_dem = f"{s3_dir.replace('s3://', '/vsis3/')}/{extract_base_path(burned_dem)}"
-        if s3_burned_dem in S3_CACHE and s3_vdt in S3_CACHE:
-            return
+        s3_bankfull_floodmap = f"{s3_dir.replace('s3://', '/vsis3/')}/{extract_base_path(bankfull_floodmap)}"
+        if s3_bankfull_floodmap in S3_CACHE:    
+            return s3_bankfull_floodmap
+        
+    vdt = os.path.join(out_dir, 'vdts', f'vdt={dem_type}.parquet')
 
     if (not opens_right(burned_dem) or overwrite) and os.path.exists(vdt):
         try:
             Curve2Flood_MainFunction(input_file, 
                                      quiet=True, 
                                      bathymetry_creation_options=['COMPRESS=LERC_DEFLATE', 'MAX_Z_ERROR=0.01', 'ZLEVEL=8', 'NUM_THREADS=ALL_CPUS'])
+            if not os.path.exists(burned_dem):
+                return None
         except Exception as e:
             LOG.error("Error occurred while running Curve2Flood bathymetry for %s", input_file)
             raise e
+        
+    return bankfull_floodmap
 
 def run_c2f_floodmaps(input_file: str, 
                       dem_type: str, 
@@ -971,18 +976,19 @@ def run_c2f_floodmaps(input_file: str,
     """
     out_dir = _dir(input_file, 2)
 
-    vdt = os.path.join(out_dir, 'vdts', f'vdt={dem_type}.parquet')
     floodmap = os.path.join(out_dir, 'floodmaps', f'dem={dem_type}', os.path.basename(input_file).replace('inputs=', '').replace('.txt', '.tif'))
 
     if s3_dir and not overwrite:
-        s3_vdt = f"{s3_dir.replace('s3://', '/vsis3/')}/{extract_base_path(vdt)}"
         s3_floodmap = f"{s3_dir.replace('s3://', '/vsis3/')}/{extract_base_path(floodmap)}"
-        if s3_floodmap in S3_CACHE and s3_vdt in S3_CACHE:
+        if s3_floodmap in S3_CACHE:
             return s3_floodmap
 
+    vdt = os.path.join(out_dir, 'vdts', f'vdt={dem_type}.parquet')
     if (not opens_right(floodmap) or overwrite) and os.path.exists(vdt) :
         try:
             Curve2Flood_MainFunction(input_file, quiet=True, flood_vdt_cells=False)
+            if not os.path.exists(floodmap):
+                return None
         except Exception as e:
             LOG.error("Error occurred while running Curve2Flood floodmap for %s", input_file)
             raise 
@@ -1034,7 +1040,7 @@ def get_oceans_raster(oceans_pq: str, bbox: tuple[float], width, height, gt, pro
         return
     
     # Step 1: Convert GeoDataFrame to OGR Layer (in memory)
-    vector_ds: gdal.Dataset = ogr.GetDriverByName('Memory').CreateDataSource('temp')
+    vector_ds: gdal.Dataset = ogr.GetDriverByName('MEM').CreateDataSource('temp')
     spatial_ref = osr.SpatialReference(wkt=gdf.crs.to_wkt())
 
     layer: ogr.Layer = vector_ds.CreateLayer('layer', srs=spatial_ref, geom_type=ogr.wkbPolygon)
@@ -1216,7 +1222,8 @@ def unbuffer_remove(floodmaps: list[str], dem_type: str, buffer_distance: float,
 
 def majority_vote(floodmap_files: list[str], 
                   overwrite: bool = False,
-                  s3_dir: str = None):
+                  s3_dir: str = None,
+                  output_dir: str = None):
     """
     Compute a majority-vote composite flood map from multiple \raster files and save
     the result as a Cloud Optimized GeoTIFF, in the
@@ -1243,10 +1250,17 @@ def majority_vote(floodmap_files: list[str],
         if s3_output_file in S3_CACHE:
             return
         
+    if output_file.startswith('/vsis3/'):
+        output_file = output_file.replace(s3_dir.replace('s3:/', '/vsis3'), output_dir)
+        
     if opens_right(output_file) and not overwrite:
         return
     
-    if len(floodmap_files) == 1 and opens_right(floodmap_files[0]):
+    os.makedirs(_dir(output_file), exist_ok=True)
+    
+    if len(floodmap_files) == 1:
+        if not opens_right(floodmap_files[0]):
+            return
         # Just copy the file
         gdal.GetDriverByName("COG").CreateCopy(output_file, gdal.Open(floodmap_files[0]), options=['COMPRESS=ZSTD', 'PREDICTOR=2'])
         return
