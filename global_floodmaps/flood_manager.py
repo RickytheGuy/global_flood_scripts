@@ -259,7 +259,7 @@ class FloodManager:
                                burned_inputs, limit, s3_dir=self.s3_dir, dem_type=dem_type, overwrite=self.overwrite_burned_dems)
         bankfull_floodmaps = [f for f in bankfull_floodmaps if f]
 
-        limit = _get_num_processes({'fabdem': 4.76, 'alos': 3, 'tilezen': 4}.get(dem_type, 6))
+        limit = _get_num_processes({'fabdem': 4.76, 'alos': 3, 'tilezen': 5}.get(dem_type, 6))
         floodmaps = start_throttled_pbar(pool, run_c2f_floodmaps, f"Creating floodmaps for {dem_type} ({limit})", 
                                floodmap_inputs, limit, s3_dir=self.s3_dir, dem_type=dem_type, overwrite=self.overwrite_floodmaps)
         floodmaps = [f for f in floodmaps if f]
