@@ -529,7 +529,8 @@ class FloodManager:
         add_file_handler(LOG, log_file, level)
         return self
     
-    def set_log_level(self, level: int) -> 'FloodManager':
+    def set_log_level(self, level: int) -> "FloodManager":
+        LOG.setLevel(level)
         for handler in LOG.handlers:
             handler.setLevel(level)
         return self
