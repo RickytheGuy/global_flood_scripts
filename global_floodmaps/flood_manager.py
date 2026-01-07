@@ -147,10 +147,10 @@ class FloodManager:
 
                 if not s3_cache_file:
                     self._s3_temp_cache_file = tempfile.NamedTemporaryFile(delete=False)
+                else:
                     class _tempfile_wrapper:
                         def __init__(self):
                             self.name = s3_cache_file
-                else:
                     self._s3_temp_cache_file = _tempfile_wrapper()
                     with open(self._s3_temp_cache_file.name, 'w') as f:
                         f.writelines(s3_cache)
