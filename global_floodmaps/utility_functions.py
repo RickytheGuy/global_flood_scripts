@@ -10,6 +10,9 @@ os.environ["AWS_NO_SIGN_REQUEST"] = "YES"
 os.environ["AWS_S3_ENDPOINT"] = "s3.amazonaws.com"
 
 def opens_right(path: str, read: bool = False) -> bool:
+    if path.startswith(('s3://', '/vsis3/')):
+        return True
+    
     if not os.path.exists(path):
         return False
     

@@ -42,6 +42,8 @@ class FloodManager:
                  oceans_pq: str,
                  s3_dir: str = None,
                  s3_dems_dir: str = None,
+                 s3_cache_file: str = None,
+                 copy_inputs_from_s3: bool = False,
                  bbox: tuple[float, float, float, float] = None,
                  number_of_tiles: int = None,
                  offset: int = 0,
@@ -127,22 +129,38 @@ class FloodManager:
         self.oceans_pq = oceans_pq
         self.s3_dir = s3_dir
         self.s3_cache = set()
+        self.copy_inputs_from_s3 = copy_inputs_from_s3
         if self.s3_dir:
             if self.s3_dir.endswith('/'):
                 self.s3_dir = self.s3_dir[:-1]
 
             s3 = s3fs.S3FileSystem(anon=True)
-            LOG.info(f"Building S3 cache for {self.s3_dir}...")
-            s3_cache = set(s3.glob(f"{self.s3_dir}/**"))
-            if s3_dems_dir:
-                if s3_dems_dir.endswith('/'):
-                    s3_dems_dir = s3_dems_dir[:-1]
-                add = set(s3.glob(f"{s3_dems_dir}/**"))
-                s3_cache.update(add)
-            s3_cache = [f"/vsis3/{f}{os.linesep}" for f in s3_cache]
-            self._s3_temp_cache_file = tempfile.NamedTemporaryFile(delete=False)
-            with open(self._s3_temp_cache_file.name, 'w') as f:
-                f.writelines(s3_cache)
+            if s3_cache_file is None or not os.path.exists(s3_cache_file):
+                LOG.info(f"Building S3 cache for {self.s3_dir}...")
+                s3_cache = set(s3.glob(f"{self.s3_dir}/**"))
+                if s3_dems_dir:
+                    if s3_dems_dir.endswith('/'):
+                        s3_dems_dir = s3_dems_dir[:-1]
+                    add = set(s3.glob(f"{s3_dems_dir}/**"))
+                    s3_cache.update(add)
+                s3_cache = [f"/vsis3/{f}{os.linesep}" for f in s3_cache]
+
+                if not s3_cache_file:
+                    self._s3_temp_cache_file = tempfile.NamedTemporaryFile(delete=False)
+                    class _tempfile_wrapper:
+                        def __init__(self):
+                            self.name = s3_cache_file
+                else:
+                    self._s3_temp_cache_file = _tempfile_wrapper()
+                    with open(self._s3_temp_cache_file.name, 'w') as f:
+                        f.writelines(s3_cache)
+            else:
+                LOG.info(f"Using existing S3 cache file '{s3_cache_file}'.")
+                class _tempfile_wrapper:
+                    def __init__(self):
+                        self.name = s3_cache_file
+
+                self._s3_temp_cache_file = _tempfile_wrapper()
 
         if not bbox:
             self.bbox = (-180, -90, 180, 90)
@@ -235,7 +253,8 @@ class FloodManager:
                                overwrite_c2f_bathymetry=self.overwrite_burned_dems,
                                overwrite_c2f_floodmap=self.overwrite_floodmaps, arc_args=self.arc_args, 
                                c2f_bathymetry_args=self.c2f_bathymetry_args, 
-                               c2f_floodmap_args=self.c2f_floodmap_args, s3_dir=self.s3_dir)
+                               c2f_floodmap_args=self.c2f_floodmap_args, s3_dir=self.s3_dir,
+                               output_dir=self.output_dir, copy_inputs_from_s3=self.copy_inputs_from_s3)
         arc_inputs = list(chain.from_iterable([i[0] for i in outputs if i[0]]))
         arc_inputs = [i for i in arc_inputs if i not in self.blacklisted_files]
         burned_inputs = list(chain.from_iterable([i[1] for i in outputs if i[1]]))
@@ -281,7 +300,7 @@ class FloodManager:
     def run_all(self) -> 'FloodManager':
         run_majority_rps = bool(self.rps)
         floodmaps = []
-        with mp.Pool(os.cpu_count(), initializer=_init_s3_cache, initargs=(self._s3_temp_cache_file.name,)) as pool:
+        with mp.Pool(os.cpu_count(), initializer=init_s3, initargs=(self._s3_temp_cache_file.name,)) as pool:
             for dem_type in self.dem_names:
                 floodmaps.extend(self._run_one_dem_type(pool, dem_type))
 

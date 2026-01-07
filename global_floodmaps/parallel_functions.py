@@ -33,6 +33,7 @@ from ._constants import ESA_TILES_FILE, STORAGE_OPTIONS
 
 gdal.UseExceptions()
 gdal.SetConfigOption('AWS_NO_SIGN_REQUEST', 'YES')
+os.environ["AWS_NO_SIGN_REQUEST"] = "YES"
 
 FDC_DS = None
 RP_DS = None
@@ -194,6 +195,9 @@ def buffer_dem(dem: str,
 
     if s3_dir and not overwrite:
         s3_out_dem = f"{s3_dir.replace('s3://', '/vsis3/')}/{extract_base_path(output_dem)}"
+        if s3_out_dem in S3_CACHE:
+            return s3_out_dem
+        s3_out_dem = s3_out_dem.replace('.tif', '.vrt') 
         if s3_out_dem in S3_CACHE:
             return s3_out_dem
         
@@ -624,6 +628,30 @@ def prepare_water_mask(dem: str,
     out_ds.WriteArray(array)
     out_ds.FlushCache()
 
+def copy(s3_file: str, local_file: str):
+    """
+    Copy a file from S3 to a local path using the global S3 client.
+
+    Parameters
+    ----------
+    s3_file : str
+        S3 URI of the source file (e.g., "s3://bucket/key").
+    local_file : str
+        Local filesystem path where the file should be copied.
+
+    Returns
+    -------
+    None
+        The function performs the copy operation and does not return a value.
+    """
+    global _global_s3
+    if _global_s3 is None:
+        raise RuntimeError("S3 client is not initialized. Call init_s3() first.")
+    
+    bucket, key = s3_file.replace('/vsis3/', '').replace("s3://", "").split("/", 1)
+    os.makedirs(os.path.dirname(local_file), exist_ok=True)
+    _global_s3.download_file(Bucket=bucket, Key=key, Filename=local_file)
+
 def prepare_inputs(dem: str, 
                    dem_type: str, 
                    mannings_table: str, 
@@ -635,7 +663,9 @@ def prepare_inputs(dem: str,
                    arc_args: dict = {}, 
                    c2f_bathymetry_args: dict = {}, 
                    c2f_floodmap_args: dict = {},
-                   s3_dir: str = None):
+                   s3_dir: str = None,
+                   output_dir: str = None,
+                   copy_inputs_from_s3: bool = False):
     """
     Prepare input files and directory structure required by ARC and Curve2Flood workflows.
     This function inspects provided flow metadata, computes empirical geometry limits,
@@ -700,12 +730,18 @@ def prepare_inputs(dem: str,
         geometry limits for subsequent processing.
     """
     out_dir = _dir(dem, 2)
+    if out_dir.startswith('/vsis3/'):
+        out_dir = os.path.join(output_dir, extract_base_path(out_dir))
+
     stream_file = os.path.join(out_dir, f'inputs={dem_type}', 'streams.tif')
     if not os.path.exists(stream_file):
         if s3_dir:
             s3_stream_file = f"{s3_dir.replace('s3://', '/vsis3/')}/{extract_base_path(stream_file)}"
             if s3_stream_file in S3_CACHE:
-                stream_file = s3_stream_file
+                if copy_inputs_from_s3:
+                    copy(s3_stream_file, stream_file)
+                else:
+                    stream_file = s3_stream_file
     
     bmf = os.path.join(_dir(dem, 2), 'flow_files', 'bmf.csv')
     if not os.path.exists(bmf):
@@ -733,7 +769,10 @@ def prepare_inputs(dem: str,
         if s3_dir:
             s3_land_use = f"{s3_dir.replace('s3://', '/vsis3/')}/{extract_base_path(land_use)}"
             if s3_land_use in S3_CACHE:
-                land_use = s3_land_use
+                if copy_inputs_from_s3:
+                    copy(s3_land_use, land_use)
+                else:
+                    land_use = s3_land_use
 
     bmf = os.path.join(out_dir, 'flow_files', 'bmf.csv')
     if not os.path.exists(bmf):
@@ -741,6 +780,7 @@ def prepare_inputs(dem: str,
             s3_bmf = f"{s3_dir.replace('s3://', '/vsis3/')}/{extract_base_path(bmf)}"
             if s3_bmf in S3_CACHE:
                 bmf = s3_bmf
+    bmf = bmf.replace('/vsis3/', 's3://')
     main_input_file = os.path.join(inputs_dir, f'inputs=arc.txt')
 
     output = [[], [], []]
@@ -796,7 +836,10 @@ def prepare_inputs(dem: str,
         if s3_dir:
             s3_burned_dem = f"{s3_dir.replace('s3://', '/vsis3/')}/{extract_base_path(burned_dem)}"
             if s3_burned_dem in S3_CACHE:
-                burned_dem = s3_burned_dem
+                if copy_inputs_from_s3:
+                    copy(s3_burned_dem, burned_dem)
+                else:
+                    burned_dem = s3_burned_dem
 
     main_input_file = os.path.join(inputs_dir, f'inputs=burned.txt')
     floodmap = os.path.join(floodmaps_dir, f'bankfull.tif')
@@ -806,12 +849,17 @@ def prepare_inputs(dem: str,
             s3_bf_file = f"{s3_dir.replace('s3://', '/vsis3/')}/{extract_base_path(bf_file)}"
             if s3_bf_file in S3_CACHE:
                 bf_file = s3_bf_file
+    bf_file = bf_file.replace('/vsis3/', 's3://')
+
     water_mask = os.path.join(inputs_dir, 'water_mask.tif')
     if not os.path.exists(water_mask):
         if s3_dir:
             s3_water_mask = f"{s3_dir.replace('s3://', '/vsis3/')}/{extract_base_path(water_mask)}"
             if s3_water_mask in S3_CACHE:
-                water_mask = s3_water_mask
+                if copy_inputs_from_s3:
+                    copy(s3_water_mask, water_mask)
+                else:
+                    water_mask = s3_water_mask
 
     output[1].append(main_input_file)
     if not opens_right(burned_dem) or overwrite_c2f_bathymetry:
@@ -852,13 +900,14 @@ def prepare_inputs(dem: str,
                 s3_flow_file = f"{s3_dir.replace('s3://', '/vsis3/')}/{extract_base_path(flow_file)}"
                 if s3_flow_file in S3_CACHE:
                     flow_file = s3_flow_file
+        flow_file = flow_file.replace('/vsis3/', 's3://')
                     
         floodmap = os.path.join(floodmaps_dir, f"{name}.tif")
         if not os.path.exists(floodmap):
             if s3_dir:
                 s3_floodmap = f"{s3_dir.replace('s3://', '/vsis3/')}/{extract_base_path(floodmap)}"
                 if s3_floodmap in S3_CACHE:
-                    floodmap = s3_floodmap
+                    continue
 
         main_input_file = os.path.join(inputs_dir, f"inputs={name}.txt")
         output[2].append(main_input_file)
