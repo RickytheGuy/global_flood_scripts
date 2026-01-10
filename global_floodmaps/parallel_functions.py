@@ -15,8 +15,10 @@ import xarray as xr
 import pandas as pd
 import geopandas as gpd
 import asf_search as asf
+from botocore import UNSIGNED
 from remotezip import RemoteZip
 from osgeo import gdal, ogr, osr
+from botocore.client import Config
 from shapely.geometry import box, Polygon
 
 from arc import Arc
@@ -48,7 +50,7 @@ def _init_s3_cache(temp_s3_cache: str):
 
 def init_s3(s3_dir):
     global _global_s3
-    _global_s3 = boto3.client("s3")
+    _global_s3 = boto3.client("s3", config=Config(signature_version=UNSIGNED))
     _init_s3_cache(s3_dir)
 
 def _get_fdc() -> xr.Dataset:
