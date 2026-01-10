@@ -1027,7 +1027,7 @@ def run_c2f_bathymetry(input_file: str,
                 return None
         except Exception as e:
             LOG.error("Error occurred while running Curve2Flood bathymetry for %s", input_file)
-            raise e
+            return None
         
     return bankfull_floodmap
 

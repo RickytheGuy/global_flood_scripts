@@ -277,7 +277,7 @@ class FloodManager:
                         self.blacklisted_files.add(file)
         
 
-        limit = _get_num_processes({'fabdem': 4.85, 'alos': 6.4, 'tilezen': 4.6}.get(dem_type, 6))
+        limit = _get_num_processes({'fabdem': 4.85, 'alos': 6.4, 'tilezen': 6}.get(dem_type, 6))
         with mp.Pool(limit, _init_s3_cache, (self._s3_temp_cache_file.name,)) as pool:
             bankfull_floodmaps = start_unthrottled_pbar(pool, run_c2f_bathymetry, f"Preparing burned DEMs for {dem_type} ({limit})", 
                                 burned_inputs, s3_dir=self.s3_dir, dem_type=dem_type, overwrite=self.overwrite_burned_dems)
