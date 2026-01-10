@@ -128,10 +128,10 @@ def _get_num_processes(n: float) -> int:
     """
     Parameters
     ----------
-    n : int
+    n : float
         Estimated memory usage in GB for a single process.
     """
-    total_mem = psutil.virtual_memory().total / (1024 ** 3)  # in GB
+    total_mem = psutil.virtual_memory().available / (1024 ** 3)  # in GB
     n_processes = os.cpu_count() or 1
     return max(min(n_processes, floor(total_mem / n)-1), 1)
 
@@ -748,7 +748,10 @@ def prepare_inputs(dem: str,
         if s3_dir:
             s3_bmf = f"{s3_dir.replace('s3://', '/vsis3/')}/{extract_base_path(bmf)}"
             if s3_bmf in S3_CACHE:
-                bmf = s3_bmf
+                # if copy_inputs_from_s3:
+                #     copy(s3_bmf, bmf)
+                # else:
+                    bmf = s3_bmf
 
     inputs_dir = os.path.join(out_dir, f'inputs={dem_type}')
     vdt_dir = os.path.join(out_dir, 'vdts')
@@ -761,9 +764,38 @@ def prepare_inputs(dem: str,
         if s3_dir:
             s3_vdt = f"{s3_dir.replace('s3://', '/vsis3/')}/{extract_base_path(vdt)}"
             if s3_vdt in S3_CACHE:
-                vdt = s3_vdt
+                if copy_inputs_from_s3:
+                    copy(s3_vdt, vdt)
+                else:
+                    vdt = s3_vdt
+
+    bathy_dem_dir = os.path.join(out_dir, 'burned_dems')
+    os.makedirs(bathy_dem_dir, exist_ok=True)
+    floodmaps_dir = os.path.join(out_dir, 'floodmaps', f'dem={dem_type}')
+    os.makedirs(floodmaps_dir, exist_ok=True)
+
+
+
+    burned_dem = os.path.join(bathy_dem_dir, f'dem_burned={dem_type}.tif')
+    if not os.path.exists(burned_dem):
+        if s3_dir:
+            s3_burned_dem = f"{s3_dir.replace('s3://', '/vsis3/')}/{extract_base_path(burned_dem)}"
+            if s3_burned_dem in S3_CACHE:
+                if copy_inputs_from_s3:
+                    copy(s3_burned_dem, burned_dem)
+                else:
+                    burned_dem = s3_burned_dem
 
     bathy = os.path.join(bathy_dir, f'bathy={dem_type}.tif')
+    if not os.path.exists(bathy) and (not opens_right(burned_dem) or overwrite_c2f_bathymetry):
+        if s3_dir:
+            s3_bathy = f"{s3_dir.replace('s3://', '/vsis3/')}/{extract_base_path(bathy)}"
+            if s3_bathy in S3_CACHE:
+                if copy_inputs_from_s3:
+                    copy(s3_bathy, bathy)
+                else:
+                    bathy = s3_bathy
+
     land_use = os.path.join(inputs_dir, 'land_use.tif')
     if not os.path.exists(land_use):
         if s3_dir:
@@ -779,7 +811,11 @@ def prepare_inputs(dem: str,
         if s3_dir:
             s3_bmf = f"{s3_dir.replace('s3://', '/vsis3/')}/{extract_base_path(bmf)}"
             if s3_bmf in S3_CACHE:
-                bmf = s3_bmf
+                # if copy_inputs_from_s3:
+                #     copy(s3_bmf, bmf)
+                # else:
+                    bmf = s3_bmf
+
     bmf = bmf.replace('/vsis3/', 's3://')
     main_input_file = os.path.join(inputs_dir, f'inputs=arc.txt')
 
@@ -821,25 +857,10 @@ def prepare_inputs(dem: str,
             f.write(f"FindBanksBasedOnLandCover\t{arc_args.get('FindBanksBasedOnLandCover', True)}\n")
             f.write(f"AROutBATHY\t{bathy}\n")
             f.write(f"BATHY_Out_File\t{bathy}\n")
-    
-    bathy_dem_dir = os.path.join(out_dir, 'burned_dems')
-    os.makedirs(bathy_dem_dir, exist_ok=True)
-    floodmaps_dir = os.path.join(out_dir, 'floodmaps', f'dem={dem_type}')
-    os.makedirs(floodmaps_dir, exist_ok=True)
 
     # Use an empirical equation to get max plausible top width
     max_tw = round(max(2000 * (max_q ** 0.15), 1000), 1)
     max_tw_bankfull = max_tw / 4
-
-    burned_dem = os.path.join(bathy_dem_dir, f'dem_burned={dem_type}.tif')
-    if not os.path.exists(burned_dem):
-        if s3_dir:
-            s3_burned_dem = f"{s3_dir.replace('s3://', '/vsis3/')}/{extract_base_path(burned_dem)}"
-            if s3_burned_dem in S3_CACHE:
-                if copy_inputs_from_s3:
-                    copy(s3_burned_dem, burned_dem)
-                else:
-                    burned_dem = s3_burned_dem
 
     main_input_file = os.path.join(inputs_dir, f'inputs=burned.txt')
     floodmap = os.path.join(floodmaps_dir, f'bankfull.tif')
@@ -894,6 +915,13 @@ def prepare_inputs(dem: str,
         names.append(forecast_date)
 
     for name in names:
+        floodmap = os.path.join(floodmaps_dir, f"{name}.tif")
+        if not os.path.exists(floodmap):
+            if s3_dir:
+                s3_floodmap = f"{s3_dir.replace('s3://', '/vsis3/')}/{extract_base_path(floodmap)}"
+                if s3_floodmap in S3_CACHE:
+                    continue
+
         flow_file = os.path.join(out_dir, 'flow_files', f'{name}.csv')
         if not os.path.exists(flow_file):
             if s3_dir:
@@ -902,13 +930,6 @@ def prepare_inputs(dem: str,
                     flow_file = s3_flow_file
         flow_file = flow_file.replace('/vsis3/', 's3://')
                     
-        floodmap = os.path.join(floodmaps_dir, f"{name}.tif")
-        if not os.path.exists(floodmap):
-            if s3_dir:
-                s3_floodmap = f"{s3_dir.replace('s3://', '/vsis3/')}/{extract_base_path(floodmap)}"
-                if s3_floodmap in S3_CACHE:
-                    continue
-
         main_input_file = os.path.join(inputs_dir, f"inputs={name}.txt")
         output[2].append(main_input_file)
 
