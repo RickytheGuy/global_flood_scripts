@@ -1237,7 +1237,10 @@ def unbuffer_remove(floodmaps: list[str], dem_type: str, buffer_distance: float,
             correct_size: np.ndarray = u_ds.ReadAsArray()
         elif dem_type in {'alos', 'tilezen'}:
             # Need to compare to the dem
-            dem_path = glob.glob(os.path.join(_dir(floodmap, 3), 'dems', f'*{dem_type}*.vrt'))[0]
+            try:
+                dem_path = glob.glob(os.path.join(_dir(floodmap, 3), 'dems', f'*{dem_type}*.vrt'))[0]
+            except IndexError:
+                continue
             dem_ds: gdal.Dataset = gdal.Open(dem_path)
             dem_width = dem_ds.RasterXSize
             dem_height = dem_ds.RasterYSize

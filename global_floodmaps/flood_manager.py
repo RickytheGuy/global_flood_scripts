@@ -264,7 +264,7 @@ class FloodManager:
         floodmap_inputs = list(chain.from_iterable([i[2] for i in outputs if i[2]]))
 
 
-        limit = _get_num_processes({'fabdem': 1.7, 'alos': 3.5, 'tilezen': 3.5}.get(dem_type, 4))
+        limit = _get_num_processes({'fabdem': 1.7, 'alos': 3, 'tilezen': 2.8}.get(dem_type, 4))
         with mp.Pool(limit, _init_s3_cache, (self._s3_temp_cache_file.name,)) as pool:
             files_to_blacklist = start_unthrottled_pbar(pool, run_arc, f"Running ARC for {dem_type} ({limit})", arc_inputs, 
                                 s3_dir=self.s3_dir, dem_type=dem_type, overwrite=self.overwrite_vdts)
