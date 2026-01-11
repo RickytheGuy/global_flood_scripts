@@ -1063,7 +1063,7 @@ def run_c2f_floodmaps(input_file: str,
                 return None
         except Exception as e:
             LOG.error("Error occurred while running Curve2Flood floodmap for %s", input_file)
-            raise 
+            return None 
 
     return floodmap
 
