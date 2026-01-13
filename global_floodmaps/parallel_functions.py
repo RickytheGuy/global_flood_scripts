@@ -245,7 +245,8 @@ def rasterize_streams(dem: str,
                     bounds: dict[str, tuple[float, float, float, float]], 
                     min_stream_order: int = 1,
                     overwrite: bool = False,
-                    s3_dir: str = None,):
+                    s3_dir: str = None,
+                    output_dir: str = None) -> str:
     """
     Rasterize vector stream layers into a GIS-aligned raster (streams.tif) matching a given DEM.
     This function creates a single-band GeoTIFF named "streams.tif" under the directory
@@ -272,16 +273,22 @@ def rasterize_streams(dem: str,
     overwrite : bool, optional
         If True, forces re-creation of the streams.tif file even if it already exists.
     """
+    out_dir = _dir(dem, 2)
+    if out_dir.startswith('/vsis3/'):
+        out_dir = os.path.join(output_dir, extract_base_path(out_dir))
     stream_file = os.path.join(_dir(dem, 2), f'inputs={dem_type}', 'streams.tif')
 
     if s3_dir and not overwrite:
         s3_stream_file = f"{s3_dir.replace('s3://', '/vsis3/')}/{extract_base_path(stream_file)}"
         if s3_stream_file in S3_CACHE:
             return s3_stream_file
-        
-
-    if opens_right(stream_file) and not overwrite and are_there_non_zero_in_raster(stream_file):
-        return stream_file
+    
+    try:
+        if opens_right(stream_file) and not overwrite and are_there_non_zero_in_raster(stream_file):
+            return stream_file
+    except Exception as e:
+        LOG.warning("Could not open existing stream file %s: %s", stream_file, str(e))
+        return None
     
     width, height, gt, proj = get_dataset_info(dem)
     minx, miny, maxx, maxy = convert_gt_to_bbox(gt, width, height)
@@ -495,6 +502,10 @@ def download_flows(stream_file: str,
         rp_ds = _get_rp()
 
         linknos = get_linknos(stream_file)
+        if len(linknos) == 0:
+            LOG.warning(f"No linknos found in stream file {stream_file}. Skipping flow download.")
+            return
+        
         existing = set(fdc_ds['river_id'].values)
         linknos = list(set(linknos) & existing)
 
