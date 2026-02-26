@@ -1,6 +1,8 @@
-import glob, os
+import glob, os, logging
 from collections import defaultdict
 from multiprocessing import Pool
+
+import s3fs
 import tqdm
 import json
 import pandas as pd
@@ -11,11 +13,13 @@ import numpy as np
 from osgeo import ogr, osr
 from shapely.geometry import box
 from curve2flood import Curve2Flood_MainFunction
-from nencarta import process_watershed
 
 gdal.UseExceptions()
 
 os.environ["AWS_NO_SIGN_REQUEST"] = "YES"
+
+logging.basicConfig(level=logging.INFO,
+                    format='%(asctime)s - %(levelname)s - %(message)s')
 
 def process_stream_file(stream_file: str) -> dict[int, list[list[int]]]:
     """Process a single stream file and return river_id -> tiles mapping."""
@@ -99,7 +103,7 @@ def make_floodmap(flow_file: str, dem: str) -> tuple[str, str] | None:
     
     os.makedirs(os.path.dirname(floodmap), exist_ok=True)
     
-    max_q = pd.read_csv(flow_file, usecols=['mean'], na_filter=False).values.max()
+    max_q = pd.read_csv(flow_file, usecols=['1'], na_filter=False).values.max()
     max_tw = round(max(2000 * (max_q ** 0.15), 1000), 1)
 
     Curve2Flood_MainFunction(args={
@@ -110,9 +114,7 @@ def make_floodmap(flow_file: str, dem: str) -> tuple[str, str] | None:
         'TopWidthPlausibleLimit': max_tw,
     },
     flood_vdt_cells=False,
-    quiet=True,
-    parallel=True,
-    fast_vdt=True
+    quiet=True
     )
 
     return floodmap
@@ -127,28 +129,9 @@ def run_c2f(flow_files: list[str]):
         for dem in ['fabdem', 'alos', 'tilezen']:
             args_list.append((flow_file, dem))
 
-    with Pool(processes=os.cpu_count()) as pool:
+    with Pool(processes=os.cpu_count()-2) as pool:
         results = list(tqdm.tqdm(
             pool.imap_unordered(make_floodmap_helper, args_list),
-            total=len(args_list),
-            desc="Running Curve2Flood"
-        ))
-
-    results = [res for res in results if res is not None]
-    return results
-
-def nencarta_runner(args):
-    flow_file, dem = args
-
-def run_nencarta(flow_files: list[str]):
-    args_list = []
-    for flow_file in flow_files:
-        for dem in ['fabdem', 'alos', 'tilezen']:
-            args_list.append((flow_file, dem))
-
-    with Pool(processes=os.cpu_count()) as pool:
-        results = list(tqdm.tqdm(
-            pool.imap_unordered(nencarta_runner, args_list),
             total=len(args_list),
             desc="Running Curve2Flood"
         ))
@@ -374,8 +357,8 @@ def unbuffer_remove_helper(args):
 
 def mp_unbuffer_remove(floodmap_dirs: list[list[str]], buffer_distance: float, oceans_pq: str):
     floodmaps = [f for sublist in floodmap_dirs for f in sublist]
-    dem_types = [os.path.basename(os.path.dirname(f)).split('=')[1] for f in floodmaps]
-    with Pool(processes=min(os.cpu_count(), len(floodmap_dirs))) as pool:
+
+    with Pool(processes=min(os.cpu_count()-2, len(floodmap_dirs))) as pool:
         for dem_type in ['fabdem', 'alos', 'tilezen']:
             args_list = [(fmap, dem_type, buffer_distance, oceans_pq
                          ) for fmap in floodmaps]
@@ -396,46 +379,74 @@ def get_floodmap_groups(floodmaps: list[str]) -> list[list[str]]:
     floodmap_dirs = [f for f in floodmap_dirs if isinstance(f, list)]
     return floodmap_dirs
 
-import os
-import glob
-import s3fs
-import json
-import logging
-from collections import defaultdict
-from multiprocessing import Pool
-
-import pandas as pd
-
-from curve2flood import Curve2Flood_MainFunction
-
-os.environ['AWS_NO_SIGN_REQUEST'] = 'YES'
-
-logging.basicConfig(level=logging.INFO,
-                    format='%(asctime)s - %(levelname)s - %(message)s')
-
-def get_forecast_peak_flows(date: str, min_rp: int, cache_file: str = None) -> pd.DataFrame:
+def get_maptable_df(date: str, cache_file: str = None) -> pd.DataFrame:
     if cache_file and os.path.exists(cache_file):
         return pd.read_parquet(cache_file)
     
     s3 = s3fs.S3FileSystem(anon=True)
     maptables = s3.glob(f's3://geoglows-v2-forecast-products/map-tables/{date}/mapstyletable_*_{date}.parquet')
     df = pd.concat([pd.read_parquet(f"s3://{path}", storage_options={'anon': True}) for path in maptables], ignore_index=True)
+    if cache_file:
+        df.to_parquet(cache_file)
+    return df
+
+def filter_flows(df: pd.DataFrame, min_rp: int) -> pd.DataFrame:
+    """
+    sometimes, a return period of 100 has streamflow value of .1, which is not something we should model
+    So let us filter out those whose mean is < 1
+    Also, let's filter to only those with return period >= min_rp
+    """
+    return df[(df['mean'] >= 1)  & (df['ret_per'] >= min_rp)]
+
+def get_forecast_peak_flows(date: str, min_rp: int, cache_file: str = None) -> pd.DataFrame:
+    cache_file_2 = cache_file.replace('.parquet', '_filtered.parquet') if cache_file else None
+    if cache_file_2 and os.path.exists(cache_file_2):
+        return pd.read_parquet(cache_file_2, index_col='comid')
+    df = get_maptable_df(date, cache_file=cache_file)
 
     # Alternate idea, much slower and base on rp, not some actual flow...
     # ds = xr.open_zarr('s3://geoglows-v2/retrospective/return-periods.zarr', storage_options={'anon': True})
     # rp_df = ds['logpearson3'].sel(river_id=xr.DataArray(df_max.index, dims="river_id"), return_period=xr.DataArray(df_max.values, dims="river_id")).to_dataframe().dropna()
 
-    # sometimes, a return period of 100 has streamflow value of .1, which is not something we should model
-    # So let us filter out those whose mean is < 1
-    # Also, let's filter to only those with return period > 2 years
-    df = df[(df['mean'] >= 1)  & (df['ret_per'] >= min_rp)]
+    df = filter_flows(df, min_rp)
     df_max = df.groupby('comid')['ret_per'].max()
     df_max = df_max[df_max.values >= min_rp]
     df = df[df['comid'].isin(df_max.index)]
     df = df.groupby(['comid']).max()[['mean', 'ret_per']]
-    if cache_file:
-        df.to_parquet(cache_file)
+    if cache_file_2:
+        df.to_parquet(cache_file_2)
 
+    return df
+
+def get_forecast_peak_ensemble_flows(date: str, min_rp: int, cache_file) -> pd.DataFrame:
+    cache_2_file = cache_file.replace('.parquet', '_ensemble.parquet')
+    if os.path.exists(cache_2_file):
+        return pd.read_parquet(cache_2_file)
+    
+    rp_df = get_maptable_df(date, cache_file=cache_file)
+    rivids = filter_flows(rp_df, min_rp)['comid'].values
+
+    # s3 = s3fs.S3FileSystem(anon=True)
+    # year = date[:4]
+    # netcdfs = [f"s3://{path}" for path in s3.glob(f's3://geoglows-v2-forecast-products/forecast-records/{year}/forecastrecord_*_{year}.nc')]
+    # ds = xr.open_mfdataset(
+    #     netcdfs,
+    #     engine="h5netcdf",
+    #     data_vars=['Qout'],
+    #     parallel=True,
+    #     storage_options={"anon": True},
+    #     chunks='auto',
+    #     cache=True,
+    #     drop_variables=['lon', 'lat'],
+    #     combine='nested',
+    #     concat_dim='rivid',
+    #     preprocess=lambda x: x.where(x['rivid'].isin(rivids), drop=True)
+    # )
+    # df = ds['Qout'].max(dim='time').to_dataframe()
+    ds = xr.open_zarr(f's3://geoglows-v2-forecasts/{date}.zarr', storage_options={'anon': True}, chunks='auto')
+    df = ds['Qout'].sel(rivid=rivids).max(dim='time').to_dataframe()
+    df = df.reset_index().pivot_table(columns='ensemble', values='Qout', index='rivid')
+    df.to_parquet(cache_2_file)
     return df
 
 def get_tiles(df: pd.DataFrame, tile_path: str):
@@ -450,7 +461,7 @@ def get_tiles(df: pd.DataFrame, tile_path: str):
 
     return tile_id_dict
 
-def create_flow_files(df: pd.DataFrame, tiles: dict[tuple[int, int], list[int]], date: str, output_folder: str):
+def create_flow_files_for_single_flow(df: pd.DataFrame, tiles: dict[tuple[int, int], list[int]], date: str, output_folder: str):
     flow_files = []
     for tile_key, comid_list in tiles.items():
         tile_filename = os.path.join(output_folder, f'lon={tile_key[0]}', f'lat={tile_key[1]}', 'flow_files', f'{date}.csv')
@@ -461,9 +472,20 @@ def create_flow_files(df: pd.DataFrame, tiles: dict[tuple[int, int], list[int]],
 
     return flow_files
 
+def create_ensemble_flow_files(df: pd.DataFrame, tiles: dict[tuple[int, int], list[int]], date: str, output_folder: str):
+    flow_files = []
+    for tile_key, comid_list in tiles.items():
+        tile_filename = os.path.join(output_folder, f'lon={tile_key[0]}', f'lat={tile_key[1]}', 'flow_files', f'{date}_ensemble.csv')
+        flow_files.append(tile_filename)
+        os.makedirs(os.path.dirname(tile_filename), exist_ok=True)
+        tile_df = df.loc[comid_list]
+        tile_df.to_csv(tile_filename)
+
+    return flow_files
+
 
 if __name__ == "__main__":
-    date = '2026012200'
+    date = '2025121200'
     forecast_data_dir = '/Users/rickyrosas/floodmap_forecast_data'
     output_folder = '/Users/Shared/flood_map_tiles'
     
@@ -472,16 +494,21 @@ if __name__ == "__main__":
     seas_parquet = os.path.join(forecast_data_dir, 'seas_buffered.parquet')
 
     logging.info(f"Starting forecast for date: {date}")
-    df = get_forecast_peak_flows(date, 10, cache_file=cache_file)
+    # df = get_forecast_peak_flows(date, 10, cache_file=cache_file)
+    df = get_forecast_peak_ensemble_flows(date, 10, cache_file)
     logging.info("Retrieved forecast peak flows")
+    # exit()
     tiles = get_tiles(df, id_to_tile_json)
-    flow_files = create_flow_files(df, tiles, date, output_folder)
+    # flow_files = create_flow_files_for_single_flow(df, tiles, date, output_folder)
+    flow_files = create_ensemble_flow_files(df, tiles, date, output_folder)
 
     floodmaps = run_c2f(flow_files)
     floodmaps_dirs = get_floodmap_groups(floodmaps)
     mp_unbuffer_remove(floodmaps_dirs, 0.1, seas_parquet)
     majority_floodmaps = mp_majority_vote(floodmaps_dirs)
     logging.info("Floodmaps created successfully")
+
+    # 15 mins for 1 flow, 1 hour for 52 as ensemble
     # if not os.path.exists(vrt):
     #     gdal.BuildVRT(vrt, majority_floodmaps)
     # logging.info("VRT built successfully")
