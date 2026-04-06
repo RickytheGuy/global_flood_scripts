@@ -98,8 +98,8 @@ def make_floodmap(flow_file: str, dem: str) -> tuple[str, str] | None:
     if not os.path.exists(vdt):
         return None
     
-    if os.path.exists(floodmap):
-        return floodmap
+    # if os.path.exists(floodmap):
+    #     return floodmap
     
     os.makedirs(os.path.dirname(floodmap), exist_ok=True)
     
@@ -197,8 +197,8 @@ def get_oceans_raster(oceans_pq: str, bbox: tuple[float], width, height, gt, pro
 
 
 def unbuffer_remove(floodmap: str, dem_type: str, buffer_distance: float, oceans_pq: str):
-    if not os.path.exists(floodmap):
-        return 
+    # if not os.path.exists(floodmap):
+    #     return 
     ds: gdal.Dataset = gdal.Open(floodmap)
     gt = ds.GetGeoTransform()
     proj = ds.GetProjection()
@@ -297,8 +297,8 @@ def majority_vote(floodmap_files: list[str],
                   output_dir: str = '') -> str:
     output_file = os.path.join(_dir(floodmap_files[0], 2), f'majority_vote_{os.path.basename(floodmap_files[0])}')
         
-    if os.path.exists(output_file):
-        return output_file
+    # if os.path.exists(output_file):
+    #     return output_file
     
     os.makedirs(_dir(output_file), exist_ok=True)
 
@@ -418,35 +418,30 @@ def get_forecast_peak_flows(date: str, min_rp: int, cache_file: str = None) -> p
 
     return df
 
-def get_forecast_peak_ensemble_flows(date: str, min_rp: int, cache_file) -> pd.DataFrame:
-    cache_2_file = cache_file.replace('.parquet', '_ensemble.parquet')
-    if os.path.exists(cache_2_file):
-        return pd.read_parquet(cache_2_file)
+def get_forecast_peak_ensemble_flows(date: str, min_rp: int, cache_file: str) -> pd.DataFrame:
+    cache_file = cache_file.replace('.parquet', '_ensemble.parquet')
+    if os.path.exists(cache_file):
+        return pd.read_parquet(cache_file)
     
-    rp_df = get_maptable_df(date, cache_file=cache_file)
-    rivids = filter_flows(rp_df, min_rp)['comid'].values
+    rp_ds = xr.open_zarr('s3://geoglows-v2/retrospective/return-periods.zarr', storage_options={'anon': True})
+    rp_threshold = (
+        rp_ds["gumbel"]
+        .sel(return_period=rp_ds.return_period[rp_ds.return_period >= min_rp].min())
+        .rename({"river_id": "rivid"})
+    )
 
-    # s3 = s3fs.S3FileSystem(anon=True)
-    # year = date[:4]
-    # netcdfs = [f"s3://{path}" for path in s3.glob(f's3://geoglows-v2-forecast-products/forecast-records/{year}/forecastrecord_*_{year}.nc')]
-    # ds = xr.open_mfdataset(
-    #     netcdfs,
-    #     engine="h5netcdf",
-    #     data_vars=['Qout'],
-    #     parallel=True,
-    #     storage_options={"anon": True},
-    #     chunks='auto',
-    #     cache=True,
-    #     drop_variables=['lon', 'lat'],
-    #     combine='nested',
-    #     concat_dim='rivid',
-    #     preprocess=lambda x: x.where(x['rivid'].isin(rivids), drop=True)
-    # )
-    # df = ds['Qout'].max(dim='time').to_dataframe()
     ds = xr.open_zarr(f's3://geoglows-v2-forecasts/{date}.zarr', storage_options={'anon': True}, chunks='auto')
-    df = ds['Qout'].sel(rivid=rivids).max(dim='time').to_dataframe()
-    df = df.reset_index().pivot_table(columns='ensemble', values='Qout', index='rivid')
-    df.to_parquet(cache_2_file)
+    forecast_max = ds['Qout'].max(dim='time')
+    above_rp = forecast_max >= rp_threshold
+    rivid_mask = above_rp.any(dim="ensemble")
+    filtered = forecast_max.sel(rivid=rivid_mask)
+    df = (
+        filtered
+        .to_dataframe()
+        .reset_index()
+        .pivot(index="rivid", columns="ensemble", values="Qout")
+    )
+    df.to_parquet(cache_file)
     return df
 
 def get_tiles(df: pd.DataFrame, tile_path: str):
@@ -496,6 +491,7 @@ if __name__ == "__main__":
     logging.info(f"Starting forecast for date: {date}")
     # df = get_forecast_peak_flows(date, 10, cache_file=cache_file)
     df = get_forecast_peak_ensemble_flows(date, 10, cache_file)
+    # print(df)
     logging.info("Retrieved forecast peak flows")
     # exit()
     tiles = get_tiles(df, id_to_tile_json)
