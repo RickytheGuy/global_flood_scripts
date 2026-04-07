@@ -10,7 +10,6 @@ sphinx:
   config: docs/conf.py
 
 formats:
-  - html
   - pdf
 
 python:
