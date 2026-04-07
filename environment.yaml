@@ -9,7 +9,7 @@ dependencies:
   - gdal>=3.11
   - libgdal-arrow-parquet
   - pip
-  - python=3.13
+  - python
   - psutil
   - pyarrow
   - remotezip
