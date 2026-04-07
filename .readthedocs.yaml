@@ -7,7 +7,7 @@ build:
 
 sphinx:
   builder: html
-  config: docs/conf.py
+  configuration: docs/conf.py
 
 formats:
   - pdf
