@@ -12,10 +12,5 @@ sphinx:
 formats:
   - pdf
 
-python:
-  install:
-  - method: setuptools
-    path: .
-
 conda:
   environment: environment.yaml

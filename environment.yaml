@@ -22,5 +22,6 @@ dependencies:
   - pip:
     - asf-search
     - botocore
-    - git+https://github.com/MikeFHS/automated-rating-curve.git
+    - git+https://github.com/RickytheGuy/automated-rating-curve-byu.git
     - git+https://github.com/RickytheGuy/curve2flood.git
+    - -e .
