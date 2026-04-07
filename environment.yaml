@@ -16,6 +16,7 @@ dependencies:
   - s3fs
   - s5cmd
   - shapely
+  - sphinx-rtd-theme
   - tqdm
   - xarray
   - zarr
