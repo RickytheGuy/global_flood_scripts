@@ -13,6 +13,7 @@ formats:
   - pdf
 
 python:
+  install:
   - method: setuptools
     path: .
 
