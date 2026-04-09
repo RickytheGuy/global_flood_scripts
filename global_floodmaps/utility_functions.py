@@ -1,13 +1,61 @@
 import os
 import re
+import json
+from functools import cache
+from typing import Iterable
 
+import pyogrio
 import pandas as pd
 import numpy as np
+import geopandas as gpd
 from osgeo import gdal
+import xarray as xr
+from shapely.geometry import box
+from rasterio.features import rasterize
+
+from ._constants import STREAM_BOUNDS_FILE, STORAGE_OPTIONS
+from .logger import LOG
 
 gdal.UseExceptions()
 os.environ["AWS_NO_SIGN_REQUEST"] = "YES"
 os.environ["AWS_S3_ENDPOINT"] = "s3.amazonaws.com"
+
+STREAM_BOUNDS = None
+FDC_DS = None
+RP_DS = None
+FC_DS = None
+
+def _get_stream_bounds() -> dict[str, list[float]]:
+    global STREAM_BOUNDS
+    if os.path.exists(STREAM_BOUNDS_FILE):
+        with open(STREAM_BOUNDS_FILE, 'r') as f:
+            STREAM_BOUNDS = json.load(f)
+    else:
+        STREAM_BOUNDS = {}
+
+    return STREAM_BOUNDS
+
+def _get_fdc() -> xr.Dataset:
+    global FDC_DS
+    if FDC_DS is None:
+        FDC_DS = xr.open_zarr('s3://geoglows-v2/retrospective/fdc.zarr', storage_options=STORAGE_OPTIONS)
+    return FDC_DS
+
+def _get_rp() -> xr.Dataset:
+    global RP_DS
+    if RP_DS is None:
+        RP_DS = xr.open_zarr("s3://geoglows-v2/retrospective/return-periods.zarr", storage_options=STORAGE_OPTIONS)
+    return RP_DS
+
+def _get_forecast(date: str) -> xr.Dataset:
+    global FC_DS
+    if FC_DS is None:
+        date = date.strip()
+        if len(date) != 12:
+            raise ValueError("Date must be in YYYYMMDDHH format.")
+        
+        FC_DS = xr.open_zarr(f's3://geoglows-v2-forecasts/{date}.zarr', storage_options=STORAGE_OPTIONS)
+    return FC_DS
 
 def opens_right(path: str, read: bool = False) -> bool:
     if path.startswith(('s3://', '/vsis3/')):
@@ -174,6 +222,15 @@ def filter_files_in_extent(minx: float,
             output.append(file)
     return output
 
+def get_rasters_in_extent(bounds: list[float], rasters: list[str]) -> list[str]:
+    output = []
+    for raster in rasters:
+        raster_bounds = get_raster_bbox(raster)
+        if bounds_intersect(bounds, raster_bounds):
+            output.append(raster)
+
+    return output
+
 def filter_files_in_extent_by_lat_lon_dirs(minx: float,
                                            miny: float,
                                            maxx: float,
@@ -207,12 +264,12 @@ def _dir(path: str, n_levels: int = 1) -> str:
     return _dir(os.path.dirname(path), n_levels - 1) if n_levels > 1 else os.path.dirname(path)
 
 def get_linknos(stream_raster: str,) -> np.ndarray:
+    if not isinstance(stream_raster, str):
+        raise ValueError(f"stream_raster must be a string, got {stream_raster}")
     ds: gdal.Dataset = gdal.Open(stream_raster)
     array = ds.ReadAsArray()
     linknos = np.unique(array)
-    if linknos[0] == 0:
-        return linknos[1:]
-    return linknos
+    return linknos[linknos > 0]
 
 def get_dataset_info(path: str):
     ds: gdal.Dataset = gdal.Open(path)
@@ -222,14 +279,55 @@ def get_dataset_info(path: str):
     projection = ds.GetProjection()
     return width, height, gt, projection
 
-def convert_gt_to_bbox(gt: tuple[float, ...], width: int, height: int) -> tuple[float, float, float, float]:
+def get_bbox_from_ds_data(gt: tuple[float, ...], width: int, height: int, projection: str = None) -> tuple[float, float, float, float]:
+    """
+    Get bounds of a GDAL dataset as (minx, miny, maxx, maxy) in EPSG:4326`
+    """
     minx = gt[0]
     maxx = gt[0] + width * gt[1]
     miny = gt[3] + height * gt[5]
     maxy = gt[3]
     if miny > maxy:
         miny, maxy = maxy, miny
+
+    if projection:
+        minx, miny, maxx, maxy = gpd.GeoSeries([box(minx, miny, maxx, maxy)], crs=projection).to_crs("EPSG:4326").total_bounds
+
     return (minx, miny, maxx, maxy)
+
+def get_ds_bbox(ds: gdal.Dataset) -> tuple[float, float, float, float]:
+    """
+    Get bounds of a GDAL dataset as (minx, miny, maxx, maxy) in EPSG:4326
+    """
+    gt = ds.GetGeoTransform()
+    width = ds.RasterXSize
+    height = ds.RasterYSize
+    projection = ds.GetProjection()
+
+    return get_bbox_from_ds_data(gt, width, height, projection)
+
+@cache
+def get_raster_bbox(raster_path: str) -> tuple[float, float, float, float]:
+    ds: gdal.Dataset = gdal.Open(raster_path)
+    return get_ds_bbox(ds)
+
+@cache
+def get_raster_res(raster_path: str) -> tuple[float, float]:
+    ds: gdal.Dataset = gdal.Open(raster_path)
+    gt = ds.GetGeoTransform()
+    return (abs(gt[1]), abs(gt[5]))
+
+def bounds_intersect(bounds1: tuple[float, float, float, float], bounds2: tuple[float, float, float, float]) -> bool:
+    minx1, miny1, maxx1, maxy1 = bounds1
+    minx2, miny2, maxx2, maxy2 = bounds2
+
+    return not (maxx1 <= minx2 or maxx2 <= minx1 or maxy1 <= miny2 or maxy2 <= miny1)
+
+def save_any_geom(gdf: gpd.GeoDataFrame, path: str):
+    if path.lower().endswith(('.parquet', '.geoparquet')):
+        gdf.to_parquet(path)
+    else:
+        gdf.to_file(path)
     
 def is_tile_in_valid_tiles(minx: float, miny: float, valid_tiles: list[list[int]]) -> bool:
     if valid_tiles is None:
@@ -344,3 +442,140 @@ def extract_base_path(path: str) -> str:
     if not match:
         raise ValueError(f"Could not extract base path from {path}")
     return match.group(1).replace('\\', '/')
+
+@cache
+def pyogrio_read_info(path: str):
+    return pyogrio.read_info(path)
+
+def read_any_geom(path: str, bbox: list[float] = None, columns: list[str] = None) -> gpd.GeoDataFrame:
+    """
+    Read any geometry file (shapefile, geojson, geoparquet) into a GeoDataFrame. Bbox in 4326.
+    """
+    if bbox is not None:
+        # If bbox is provided, we need to make sure it's in the same CRS as the data. We can check the CRS of the data by reading just the metadata with pyogrio, and then reprojecting the bbox if necessary.
+        info = pyogrio_read_info(path)
+        data_crs = info['crs']
+        if data_crs is not None and data_crs != 'EPSG:4326':
+            minx, miny, maxx, maxy = bbox
+            gdf_bbox = gpd.GeoSeries([box(minx, miny, maxx, maxy)], crs="EPSG:4326").to_crs(data_crs)
+            bbox = gdf_bbox.total_bounds
+
+    if path.lower().endswith(('.parquet', '.geoparquet')):
+        try:
+            return gpd.read_parquet(path, bbox=bbox, columns=columns)
+        except ValueError as e:
+            if "Specifying 'bbox' not supported for this Parquet file" in str(e):
+                gdf = gpd.read_parquet(path, columns=columns)
+                minx, miny, maxx, maxy = bbox
+                gdf = gdf.cx[minx:maxx, miny:maxy]
+                return gdf
+    
+    return gpd.read_file(path, use_arrow=True, bbox=bbox, columns=columns)
+
+def _streamline_is_in_dem_bounds(stream: str, dem_bounds: tuple[float, float, float, float]) -> bool:
+    all_stream_bounds = _get_stream_bounds()
+    stream_bounds = all_stream_bounds.get(os.path.basename(stream))
+    if stream_bounds is None:
+        info = pyogrio_read_info(stream)
+        stream_bounds = info['bbox']
+        all_stream_bounds[os.path.basename(stream)] = stream_bounds
+
+    return bounds_intersect(stream_bounds, dem_bounds)
+
+def get_streamlines_in_dem_extent(dem: str, streamlines: list[str]) -> list[str]:
+    dem_bounds = get_raster_bbox(dem)
+
+    streamlines_to_clip = []
+    for stream in streamlines:
+        if _streamline_is_in_dem_bounds(stream, dem_bounds):
+            streamlines_to_clip.append(stream)
+
+    return streamlines_to_clip
+
+def clip_streamlines_to_dem(dem: str, streamlines: list[str], output: str):
+    dem_bounds = get_raster_bbox(dem)
+    streamlines_to_clip = get_streamlines_in_dem_extent(dem, streamlines)
+
+    if len(streamlines_to_clip) == 0:
+        raise ValueError("No streamlines intersect with DEM")
+    
+    gdf = pd.concat([read_any_geom(stream, bbox=dem_bounds) for stream in streamlines_to_clip], ignore_index=True)
+    save_any_geom(gdf, output)
+
+    return
+        
+def _get_return_period_flows_for_linknos(linknos: Iterable[int], rps: list[float], flow_file: str):
+    rp_ds = _get_rp()
+    existing = set(rp_ds['river_id'].values)
+    linknos = list(set(linknos) & existing)
+    try:
+        df = rp_ds.sel(river_id=linknos, return_period=rps).to_dataframe()
+    except KeyError:
+        LOG.error(f"Return period {rps} not found in the dataset. Available return periods are {', '.join(rp_ds['return_period'].values.astype(str))}")
+        return
+    
+    if not df.empty:
+        df['logpearson3'] = df['logpearson3'].fillna(df['gumbel'])
+        df['logpearson3'].unstack(level='return_period').round().to_csv(flow_file)
+    else:
+        LOG.warning("No matching linknos found in return period dataset")
+
+def get_return_period_flows_from_stream_raster(stream_raster: str, rps: list[float], flow_file: str):
+    linknos = get_linknos(stream_raster)
+    _get_return_period_flows_for_linknos(linknos, rps, flow_file)
+
+
+
+def get_return_period_flows_in_dem_extent(dem: str, streamline: str | list[str], rps: list[float], flow_file: str, river_id_field: str = 'LINKNO'):
+    dem_bounds = get_raster_bbox(dem)
+    
+    if isinstance(streamline, str):
+        streamlines = [streamline]
+    else:
+        streamlines = streamline
+
+    linknos = set()
+    for stream_geom in streamlines:
+        linknos.update(read_any_geom(stream_geom, bbox=dem_bounds)[river_id_field].unique())
+
+    if len(linknos) == 0:
+        LOG.warning(f"No linknos found in {stream_geom} for {dem}, skipping.")
+        return
+    
+    _get_return_period_flows_for_linknos(linknos, rps, flow_file)
+
+def buffer_dem(dem: str, output_dem: str, all_dems: list[str], buffer_distance: float = 0.1, as_vrt: bool = True) -> str:
+    minx, miny, maxx, maxy = get_raster_bbox(dem)
+    
+    minx -= buffer_distance
+    maxx += buffer_distance
+    miny -= buffer_distance
+    maxy += buffer_distance
+
+    surrounding_dems = get_rasters_in_extent((minx, miny, maxx, maxy), all_dems)
+    if dem not in surrounding_dems:
+        raise ValueError("The original DEM is not in the candidates list.")
+    
+    if as_vrt and not output_dem.lower().endswith('.vrt'):
+        LOG.warning("Output file does not have .vrt extension, but as_vrt is True. Proceeding to create a VRT file regardless.")
+    if not as_vrt and output_dem.lower().endswith('.vrt'):
+        LOG.warning("Output file has .vrt extension, but as_vrt is False. Proceeding to create a non-VRT file regardless.")
+    
+    xres, yres = get_raster_res(dem)
+    if as_vrt:
+        vrt_options = gdal.BuildVRTOptions(resampleAlg='nearest',
+                                                outputBounds=(minx, miny, maxx, maxy),
+                                                targetAlignedPixels=True,
+                                                xRes=xres,
+                                                yRes=yres)
+        gdal.BuildVRT(output_dem, surrounding_dems, options=vrt_options)
+    else:
+        warp_options = gdal.WarpOptions(resampleAlg='nearest',
+                                        outputBounds=(minx, miny, maxx, maxy),
+                                        targetAlignedPixels=True,
+                                        xRes=xres,
+                                        yRes=yres)
+        gdal.Warp(output_dem, surrounding_dems, options=warp_options)
+    
+    return output_dem
+

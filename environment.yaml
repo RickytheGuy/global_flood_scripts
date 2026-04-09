@@ -12,6 +12,7 @@ dependencies:
   - python
   - psutil
   - pyarrow
+  - pyogrio
   - remotezip
   - s3fs
   - s5cmd

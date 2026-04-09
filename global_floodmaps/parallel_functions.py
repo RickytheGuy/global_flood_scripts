@@ -6,17 +6,18 @@ from math import floor
 from functools import partial
 from collections import deque
 import time
+import multiprocessing as mp
 
 import tqdm
-import boto3
+# import boto3
 import psutil
 import numpy as np
 import xarray as xr
 import pandas as pd
 import geopandas as gpd
-import asf_search as asf
+# import asf_search as asf
 from botocore import UNSIGNED
-from remotezip import RemoteZip
+# from remotezip import RemoteZip
 from osgeo import gdal, ogr, osr
 from botocore.client import Config
 from shapely.geometry import box, Polygon
@@ -25,7 +26,7 @@ from arc import Arc
 from curve2flood import Curve2Flood_MainFunction
 
 from .utility_functions import (
-    opens_right, get_dataset_info, convert_gt_to_bbox, is_tile_in_valid_tiles, 
+    opens_right, get_dataset_info, get_bbox_from_ds_data, is_tile_in_valid_tiles, 
     get_dem_in_extent, dem_to_dir, _dir, clean_stream_raster, get_linknos,
     lat_to_y, lon_to_x, get_s3_fabdem_path,
     are_there_non_zero_in_raster, extract_base_path
@@ -210,7 +211,7 @@ def buffer_dem(dem: str,
         return output_dem
 
     width, height, gt, _ = get_dataset_info(dem)
-    minx, miny, maxx, maxy = convert_gt_to_bbox(gt, width, height)
+    minx, miny, maxx, maxy = get_bbox_from_ds_data(gt, width, height)
 
     # Check if tile is in the area of interest
     if valid_tiles and not is_tile_in_valid_tiles(minx, miny, valid_tiles):
@@ -291,7 +292,7 @@ def rasterize_streams(dem: str,
         return None
     
     width, height, gt, proj = get_dataset_info(dem)
-    minx, miny, maxx, maxy = convert_gt_to_bbox(gt, width, height)
+    minx, miny, maxx, maxy = get_bbox_from_ds_data(gt, width, height)
 
     stream_files = []
     for f, bbox in bounds.items():
@@ -376,7 +377,7 @@ def warp_land_use(dem: str,
         return
     
     width, height, gt, proj = get_dataset_info(dem)
-    bbox = convert_gt_to_bbox(gt, width, height)
+    bbox = get_bbox_from_ds_data(gt, width, height)
     tiles = set(gpd.read_file(ESA_TILES_FILE, bbox=bbox, ignore_geometry=True, use_arrow=True)['ll_tile'])
 
     landcover_files = []
@@ -1529,3 +1530,32 @@ def download_tilezen_tile(bbox: list[int], output_dir: str, overwrite: bool = Fa
     key = f'dems/tilezen/tilezen_{floor(minx)}_{floor(miny)}.tif'
     
     return _tile_helper(output_dir, bucket, key, overwrite, download)
+
+def bar_map(pool, func, iterable, chunksize=None, **pbar_kwargs):
+    if chunksize is None:
+        chunksize, extra = divmod(len(iterable), len(pool._pool) * 4)
+        if extra:
+            chunksize += 1
+
+    results = []
+    for result in tqdm.tqdm(pool.imap(func, iterable, chunksize),  **pbar_kwargs):
+        results.append(result)
+
+    return results
+
+def _func_wrapper(args):
+    func, *arg = args
+    return func(*arg)
+
+def bar_starmap(pool, func, iterable, chunksize=None, **pbar_kwargs):
+    iterable = [(func, *arg) for arg in iterable]
+    if chunksize is None:
+        chunksize, extra = divmod(len(iterable), len(pool._pool) * 4)
+        if extra:
+            chunksize += 1
+
+    results = []
+    for result in tqdm.tqdm(pool.imap(_func_wrapper, iterable, chunksize),  **pbar_kwargs):
+        results.append(result)
+
+    return results
