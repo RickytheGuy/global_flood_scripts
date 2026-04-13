@@ -6,7 +6,6 @@ from math import floor
 from functools import partial
 from collections import deque
 import time
-import multiprocessing as mp
 
 import tqdm
 # import boto3
