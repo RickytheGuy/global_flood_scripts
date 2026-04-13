@@ -8,6 +8,8 @@ dependencies:
   - git
   - gdal>=3.11
   - libgdal-arrow-parquet
+  - mkdocs<2.0
+  - mkdocs-material
   - pip
   - python
   - psutil

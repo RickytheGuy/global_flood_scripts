@@ -5,12 +5,8 @@ build:
   tools:
     python: miniconda3-3.12-24.1
 
-sphinx:
-  builder: html
-  configuration: docs/conf.py
-
-formats:
-  - pdf
+mkdocs:
+configuration: mkdocs.yml
 
 conda:
   environment: environment.yaml

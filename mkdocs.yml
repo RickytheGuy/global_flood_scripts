@@ -1,0 +1,7 @@
+theme:
+  name: readthedocs
+  
+site_name: Global Flood Scripts
+
+nav:
+  - Home: index.md
