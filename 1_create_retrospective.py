@@ -6,7 +6,7 @@ from functools import partial
 os.environ["KMP_WARNINGS"] = "0"
 
 from nencarta import process_watershed, set_log_level
-from global_floodmaps.utility_functions import get_streamlines_in_dem_extent, _dir, get_return_period_flows_in_dem_extent, buffer_dem
+from global_floodmaps.utility_functions import get_streamlines_in_dem_extent, _dir, get_return_period_flows_in_dem_extent, buffer_dem, unbuffer_and_mask_oceans, clip_streamlines_to_dem
 from global_floodmaps.parallel_functions import bar_map, bar_starmap
 
 set_log_level('ERROR')
@@ -28,14 +28,18 @@ if __name__ == "__main__":
 
         dems_with_streams = []
         buffered_dems = []
-        streamlines_to_use = []
+        clipped_streamlines = []
+        streamline_clipping_args = []
         for dem, streamlines in zip(dems, streamlines_for_each_dem):
             if streamlines is not None and len(streamlines) > 0:
                 dems_with_streams.append(dem)
-                streamlines_to_use.append(streamlines[0])
 
                 buffered_dem = os.path.join(buffered_dem_dir, os.path.basename(_dir(dem, 2)) + '_' + os.path.basename(dem).replace('.tif', '_buffered.vrt'))
                 buffered_dems.append(buffered_dem)
+
+                clipped_stream = os.path.join(buffered_dem_dir, os.path.basename(_dir(dem, 2)) + '_' + os.path.basename(dem).replace('.tif', '_streamlines.parquet'))
+                clipped_streamlines.append(clipped_stream)
+                streamline_clipping_args.append((buffered_dem, streamlines, clipped_stream))
             else:
                 print(f"No streamlines found in extent of {dem}, skipping.")
 
@@ -47,10 +51,18 @@ if __name__ == "__main__":
         if to_do:
             bar_starmap(
                 pool, 
-                partial(buffer_dem, all_dems=dems, as_vrt=True, buffer_distance=0.01),
+                partial(buffer_dem, all_dems=dems, as_vrt=True, buffer_distance=0.05),
                 to_do,
                 total=len(to_do), desc="Buffering DEMs"
             )
+
+        bar_starmap(
+            pool,
+            clip_streamlines_to_dem,
+            streamline_clipping_args,
+            total=len(streamline_clipping_args),
+            desc="Clipping streamlines to buffered DEM extents"
+        )
 
         rp_flow_files = []
         names = []
@@ -65,15 +77,12 @@ if __name__ == "__main__":
         bar_starmap(
             pool,
             get_return_period_flows_in_dem_extent, 
-            zip(buffered_dems, streamlines_to_use, [[10, 25, 50, 100]]*len(streamlines_to_use), rp_flow_files),
+            zip(buffered_dems, clipped_streamlines, [[10, 25, 50, 100]]*len(clipped_streamlines), rp_flow_files),
             total=len(buffered_dems),
             desc="Calculating return period flows"
         )
 
         kwargs = {
-            # "name": 'test',
-            # "flowline": streamlines_to_use[0],
-            # "dem_dir": os.path.dirname(dems_with_streams[0]),
             "output_dir": output_dir,
             "bathy_use_banks": False,
             "flood_waterlc_and_strm_cells": False,
@@ -91,9 +100,7 @@ if __name__ == "__main__":
             "streamflow_source": "GEOGLOWS",
             "overwrite_floodmaps": False,
             "make_fist_inputs": False,
-            # "dem_filter": "*fabdem*.vrt",
             "floodmap_mode": "user",
-            # "user_flow_files": rp_flow_files[0],
             "make_curvefile": False,
             "make_ap_database": False,
             "vdt_file_extension": "parquet",
@@ -116,18 +123,29 @@ if __name__ == "__main__":
             "land_use_cache_dir": "/Users/Shared/esa_landcover"
         }
         
-        args = []
-        for dem, stream, flow_file, name in zip(buffered_dems, streamlines_to_use, rp_flow_files, names):
-            args.append(kwargs | {
+        nencarta_args = []
+        for buffered_dem, stream, flow_file, name in zip(buffered_dems, clipped_streamlines, rp_flow_files, names):
+            nencarta_args.append(kwargs | {
                 "name": name,
                 "flowline": stream,
-                "dem_dir": os.path.dirname(dem),
+                "dem_dir": os.path.dirname(buffered_dem),
                 "user_flow_files": flow_file,
-                "dem_filter": os.path.basename(dem)
+                "dem_filter": os.path.basename(buffered_dem)
             })
 
-        bar_map(pool, process_watershed, args, total=len(args), desc="Processing watersheds")
+        bar_map(pool, process_watershed, nencarta_args, total=len(nencarta_args), desc="Processing watersheds")
 
-    
-# First naive time: 15:15
-# With LU cache: 14:38
+        unbuffer_args = []
+        for unbuffered_dem, name in zip(dems_with_streams, names):
+            floodmap = glob.glob(os.path.join(output_dir, name, f"FloodMap", f"GEOGLOWS_{name}*_ARC_Flood_return_period_flows.tif"))
+            if not floodmap:
+                continue
+
+            floodmap = floodmap[0]
+            land_use = glob.glob(os.path.join(output_dir, name, f"LAND", f"{name}*_LAND_Raster.tif"))[0]
+            oceans_pq = '/Users/rickyrosas/seas_buffered.parquet'
+
+            unbuffer_args.append((unbuffered_dem, floodmap, land_use, oceans_pq))
+
+        bar_starmap(pool, unbuffer_and_mask_oceans, unbuffer_args, total=len(unbuffer_args), desc="Unbuffering DEMs and masking oceans")
+

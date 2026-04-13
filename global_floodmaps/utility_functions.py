@@ -1,6 +1,7 @@
 import os
 import re
 import json
+import warnings
 from functools import cache
 from typing import Iterable
 
@@ -8,10 +9,10 @@ import pyogrio
 import pandas as pd
 import numpy as np
 import geopandas as gpd
-from osgeo import gdal
+from osgeo import gdal, ogr, osr
 import xarray as xr
 from shapely.geometry import box
-from rasterio.features import rasterize
+import pyarrow.parquet as pq
 
 from ._constants import STREAM_BOUNDS_FILE, STORAGE_OPTIONS
 from .logger import LOG
@@ -83,11 +84,14 @@ def opens_right(path: str, read: bool = False) -> bool:
         if ds is None:
             return False
         gt = ds.GetGeoTransform()
-        if gt == (0.0, 1.0, 0.0, 0.0, 0.0, 1.0) or sum(ds.GetGeoTransform()) == 0:
+        if gt == (0.0, 1.0, 0.0, 0.0, 0.0, 1.0) or sum(gt) == 0:
             return False
         return True
     except:
         return False
+    
+def rewrite_file_as_parquet_with_covering_bbox(geometry_file: str) -> None:
+    read_any_geom(geometry_file).to_parquet(geometry_file, index=False, compression='brotli', write_covering_bbox=True)
     
 def clean_stream_raster(stream_raster: str, num_passes: int = 2) -> bool:
     """
@@ -323,11 +327,11 @@ def bounds_intersect(bounds1: tuple[float, float, float, float], bounds2: tuple[
 
     return not (maxx1 <= minx2 or maxx2 <= minx1 or maxy1 <= miny2 or maxy2 <= miny1)
 
-def save_any_geom(gdf: gpd.GeoDataFrame, path: str):
+def save_any_geom(gdf: gpd.GeoDataFrame, path: str, **kwargs) -> None:
     if path.lower().endswith(('.parquet', '.geoparquet')):
-        gdf.to_parquet(path)
+        gdf.to_parquet(path, **kwargs)
     else:
-        gdf.to_file(path)
+        gdf.to_file(path, **kwargs)
     
 def is_tile_in_valid_tiles(minx: float, miny: float, valid_tiles: list[list[int]]) -> bool:
     if valid_tiles is None:
@@ -445,7 +449,18 @@ def extract_base_path(path: str) -> str:
 
 @cache
 def pyogrio_read_info(path: str):
-    return pyogrio.read_info(path)
+    info = pyogrio.read_info(path)
+    data_crs = info['crs']
+    if data_crs is None:
+        parquet_file = pq.ParquetFile(path)
+
+        # Retrieve the file metadata
+        metadata = parquet_file.metadata
+        geo_metadata = json.loads(metadata.metadata[b'geo'].decode('utf-8'))
+        data_crs = ":".join(map(str,geo_metadata['columns']['geometry']['crs']['id'].values()))
+        info['crs'] = data_crs
+
+    return info
 
 def read_any_geom(path: str, bbox: list[float] = None, columns: list[str] = None) -> gpd.GeoDataFrame:
     """
@@ -465,10 +480,12 @@ def read_any_geom(path: str, bbox: list[float] = None, columns: list[str] = None
             return gpd.read_parquet(path, bbox=bbox, columns=columns)
         except ValueError as e:
             if "Specifying 'bbox' not supported for this Parquet file" in str(e):
+                warnings.warn(f"Could not read {path} with bbox. Consider adding covering bbox to parquet file for faster reading.", stacklevel=2)
                 gdf = gpd.read_parquet(path, columns=columns)
                 minx, miny, maxx, maxy = bbox
                 gdf = gdf.cx[minx:maxx, miny:maxy]
                 return gdf
+            raise e
     
     return gpd.read_file(path, use_arrow=True, bbox=bbox, columns=columns)
 
@@ -494,13 +511,8 @@ def get_streamlines_in_dem_extent(dem: str, streamlines: list[str]) -> list[str]
 
 def clip_streamlines_to_dem(dem: str, streamlines: list[str], output: str):
     dem_bounds = get_raster_bbox(dem)
-    streamlines_to_clip = get_streamlines_in_dem_extent(dem, streamlines)
-
-    if len(streamlines_to_clip) == 0:
-        raise ValueError("No streamlines intersect with DEM")
-    
-    gdf = pd.concat([read_any_geom(stream, bbox=dem_bounds) for stream in streamlines_to_clip], ignore_index=True)
-    save_any_geom(gdf, output)
+    gdf = pd.concat([read_any_geom(stream, bbox=dem_bounds) for stream in streamlines], ignore_index=True)
+    save_any_geom(gdf, output, compression='brotli', write_covering_bbox=True)
 
     return
         
@@ -539,7 +551,8 @@ def get_return_period_flows_in_dem_extent(dem: str, streamline: str | list[str],
         linknos.update(read_any_geom(stream_geom, bbox=dem_bounds)[river_id_field].unique())
 
     if len(linknos) == 0:
-        LOG.warning(f"No linknos found in {stream_geom} for {dem}, skipping.")
+        LOG.warning(f"No linknos found in {stream_geom} for {dem}, writing empty file.")
+        pd.DataFrame(columns=["river_id"] + rps).to_csv(flow_file, index=False)
         return
     
     _get_return_period_flows_for_linknos(linknos, rps, flow_file)
@@ -579,3 +592,93 @@ def buffer_dem(dem: str, output_dem: str, all_dems: list[str], buffer_distance: 
     
     return output_dem
 
+def get_oceans_array_in_area(bbox: list[float], oceans_pq: str, width: int, height: int, gt: tuple[float, ...], proj: str) -> np.ndarray | None:
+    gdf = gpd.read_parquet(oceans_pq, columns=['geometry'], bbox=bbox)
+    if gdf.empty:
+        return
+    
+    gdf = gdf.cx[bbox[0]:bbox[2], bbox[1]:bbox[3]]
+    if gdf.empty:
+        return
+    
+    # Step 1: Convert GeoDataFrame to OGR Layer (in memory)
+    vector_ds: gdal.Dataset = (ogr.GetDriverByName('MEM') or ogr.GetDriverByName('Memory')).CreateDataSource('temp')
+    spatial_ref = osr.SpatialReference(wkt=gdf.crs.to_wkt())
+
+    layer: ogr.Layer = vector_ds.CreateLayer('layer', srs=spatial_ref, geom_type=ogr.wkbPolygon)
+
+    # Add dummy feature to layer
+    for geom in gdf.geometry:
+        geom = ogr.CreateGeometryFromWkb(geom.wkb)
+        feature = ogr.Feature(layer.GetLayerDefn())
+        feature.SetGeometry(geom)
+        layer.CreateFeature(feature)
+        feature = None
+
+    # Step 2: Create output raster in memory
+    oceans_ds: gdal.Dataset = gdal.GetDriverByName("MEM").Create('', width, height, 1, gdal.GDT_Byte)
+    oceans_ds.SetGeoTransform(gt)
+    oceans_ds.SetProjection(proj)
+
+    # Step 3: Rasterize with a burn value of 1
+    gdal.RasterizeLayer(
+        oceans_ds,
+        [1],            # band 1
+        layer,
+        burn_values=[1], # fill with 1 where geometry exists,
+        options=['ALL_TOUCHED=TRUE']
+    )
+    oceans_ds.FlushCache()
+    oceans_array = oceans_ds.ReadAsArray()
+
+    return oceans_array
+
+def unbuffer_and_mask_oceans(unbuffered_dem: str, floodmap: str, land_use: str = None, oceans_pq: str = None, flood_value: np.uint8 = 100):
+    ds: gdal.Dataset = gdal.Open(floodmap)
+    width = ds.RasterXSize
+    height = ds.RasterYSize
+    ds = None
+
+    ds: gdal.Dataset = gdal.Open(unbuffered_dem)
+    unbuffered_width = ds.RasterXSize
+    unbuffered_height = ds.RasterYSize
+    if unbuffered_width == width and unbuffered_height == height:
+        return
+
+    gt = ds.GetGeoTransform()
+    minx = gt[0]
+    maxx = gt[0] + ds.RasterXSize * gt[1]
+    miny = gt[3] + ds.RasterYSize * gt[5]
+    maxy = gt[3]
+    ds = None
+
+    options = gdal.WarpOptions(format='MEM',
+                                    outputBounds=(minx, maxy, maxx, miny),
+                                    width=unbuffered_width,
+                                    height=unbuffered_height,
+                                    )
+    unbuffered_ds: gdal.Dataset = gdal.Warp('', floodmap, options=options)
+
+    gt = unbuffered_ds.GetGeoTransform()
+    proj = unbuffered_ds.GetProjection()
+    flood_array: np.ndarray = unbuffered_ds.ReadAsArray()
+
+    if land_use:
+        lu_ds: gdal.Dataset = gdal.Warp('', land_use, options=options)
+        lu_array: np.ndarray = lu_ds.ReadAsArray()
+        lu_ds = None
+        flood_array[lu_array == 80] = flood_value
+
+    if oceans_pq:
+        oceans_array = get_oceans_array_in_area((minx, miny, maxx, maxy), oceans_pq, unbuffered_width, unbuffered_height, gt, proj)
+        if oceans_array is not None:
+            flood_array[oceans_array == 1] = 0
+
+    # Create a new MEM dataset to hold the modified array
+    mem_ds: gdal.Dataset = gdal.GetDriverByName('MEM').Create('', unbuffered_width, unbuffered_height, 1, gdal.GDT_Byte)
+    mem_ds.SetGeoTransform(gt)
+    mem_ds.SetProjection(proj)
+    mem_ds.GetRasterBand(1).WriteArray(flood_array)
+
+    # Now safely write to COG
+    gdal.GetDriverByName("COG").CreateCopy(floodmap, mem_ds, options=['COMPRESS=DEFLATE', 'PREDICTOR=2'])
