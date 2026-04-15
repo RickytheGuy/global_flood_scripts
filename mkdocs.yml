@@ -5,3 +5,5 @@ site_name: Global Flood Scripts
 
 nav:
   - Home: index.md
+  - Workflow Overview: workflow.md
+  - Retrospective Flood Maps: retrospective.md

@@ -91,6 +91,7 @@ def opens_right(path: str, read: bool = False) -> bool:
         return False
     
 def rewrite_file_as_parquet_with_covering_bbox(geometry_file: str) -> None:
+    """Rewrite a GeoParquet file with covering-bbox metadata for faster bbox reads."""
     read_any_geom(geometry_file).to_parquet(geometry_file, index=False, compression='brotli', write_covering_bbox=True)
     
 def clean_stream_raster(stream_raster: str, num_passes: int = 2) -> bool:
@@ -500,6 +501,7 @@ def _streamline_is_in_dem_bounds(stream: str, dem_bounds: tuple[float, float, fl
     return bounds_intersect(stream_bounds, dem_bounds)
 
 def get_streamlines_in_dem_extent(dem: str, streamlines: list[str]) -> list[str]:
+    """Return the stream parquet files whose stored bounds intersect a DEM tile."""
     dem_bounds = get_raster_bbox(dem)
 
     streamlines_to_clip = []
@@ -510,6 +512,7 @@ def get_streamlines_in_dem_extent(dem: str, streamlines: list[str]) -> list[str]
     return streamlines_to_clip
 
 def clip_streamlines_to_dem(dem: str, streamlines: list[str], output: str):
+    """Clip one or more stream parquet files to a DEM footprint and save the result."""
     dem_bounds = get_raster_bbox(dem)
     gdf = pd.concat([read_any_geom(stream, bbox=dem_bounds) for stream in streamlines], ignore_index=True)
     save_any_geom(gdf, output, compression='brotli', write_covering_bbox=True)
@@ -539,6 +542,7 @@ def get_return_period_flows_from_stream_raster(stream_raster: str, rps: list[flo
 
 
 def get_return_period_flows_in_dem_extent(dem: str, streamline: str | list[str], rps: list[float], flow_file: str, river_id_field: str = 'LINKNO'):
+    """Write a GEOGLOWS return-period flow CSV for all stream IDs inside a DEM tile."""
     dem_bounds = get_raster_bbox(dem)
     
     if isinstance(streamline, str):
@@ -558,6 +562,7 @@ def get_return_period_flows_in_dem_extent(dem: str, streamline: str | list[str],
     _get_return_period_flows_for_linknos(linknos, rps, flow_file)
 
 def buffer_dem(dem: str, output_dem: str, all_dems: list[str], buffer_distance: float = 0.1, as_vrt: bool = True) -> str:
+    """Expand a DEM tile by ``buffer_distance`` degrees using neighboring rasters."""
     minx, miny, maxx, maxy = get_raster_bbox(dem)
     
     minx -= buffer_distance
@@ -634,6 +639,7 @@ def get_oceans_array_in_area(bbox: list[float], oceans_pq: str, width: int, heig
     return oceans_array
 
 def unbuffer_and_mask_oceans(unbuffered_dem: str, floodmap: str, land_use: str = None, oceans_pq: str = None, flood_value: np.uint8 = 100):
+    """Crop a buffered flood map back to the source DEM extent and remove ocean cells."""
     ds: gdal.Dataset = gdal.Open(floodmap)
     width = ds.RasterXSize
     height = ds.RasterYSize
