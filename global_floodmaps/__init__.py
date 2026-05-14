@@ -11,10 +11,15 @@ from .retrospective import (
 from .utility_functions import (
     convert_area_to_single_map, convert_area_to_single_vrt
 )
+from .domain import  LocalDomain
 from .logger import LOG
+from .model_manager import ModelManager
 __version__ = "0.1.0"
 
 __all__ = [
+    "LocalDomain",
+    "ModelManager",
+    # "MemoryDomain",
     "FloodManager",
     "RetrospectiveConfig",
     "RetrospectivePaths",

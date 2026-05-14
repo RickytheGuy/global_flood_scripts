@@ -22,31 +22,22 @@ os.environ["AWS_NO_SIGN_REQUEST"] = "YES"
 os.environ["AWS_S3_ENDPOINT"] = "s3.amazonaws.com"
 
 STREAM_BOUNDS = None
-FDC_DS = None
-RP_DS = None
-FC_DS = None
 
+
+@cache
 def _get_stream_bounds() -> dict[str, list[float]]:
-    global STREAM_BOUNDS
     if os.path.exists(STREAM_BOUNDS_FILE):
         with open(STREAM_BOUNDS_FILE, 'r') as f:
-            STREAM_BOUNDS = json.load(f)
+            return json.load(f)
     else:
-        STREAM_BOUNDS = {}
-
-    return STREAM_BOUNDS
-
+        return {}
+@cache
 def _get_fdc() -> xr.Dataset:
-    global FDC_DS
-    if FDC_DS is None:
-        FDC_DS = xr.open_zarr('s3://geoglows-v2/retrospective/fdc.zarr', storage_options=STORAGE_OPTIONS)
-    return FDC_DS
+    return xr.open_zarr('s3://geoglows-v2/retrospective/fdc.zarr', storage_options=STORAGE_OPTIONS)
 
+@cache
 def _get_rp() -> xr.Dataset:
-    global RP_DS
-    if RP_DS is None:
-        RP_DS = xr.open_zarr("s3://geoglows-v2/retrospective/return-periods.zarr", storage_options=STORAGE_OPTIONS)
-    return RP_DS
+   return xr.open_zarr("s3://geoglows-v2/retrospective/return-periods.zarr", storage_options=STORAGE_OPTIONS)
 
 def _get_forecast(date: str) -> xr.Dataset:
     global FC_DS
@@ -228,13 +219,13 @@ def filter_files_in_extent(minx: float,
     return output
 
 def get_rasters_in_extent(bounds: list[float], rasters: list[str]) -> list[str]:
-    output = []
+    output = set()
     for raster in rasters:
         raster_bounds = get_raster_bbox(raster)
         if bounds_intersect(bounds, raster_bounds):
-            output.append(raster)
+            output.add(raster)
 
-    return output
+    return list(output)
 
 def filter_files_in_extent_by_lat_lon_dirs(minx: float,
                                            miny: float,
@@ -449,7 +440,7 @@ def extract_base_path(path: str) -> str:
     return match.group(1).replace('\\', '/')
 
 @cache
-def pyogrio_read_info(path: str):
+def pyogrio_read_info(path: str) -> dict:
     info = pyogrio.read_info(path)
     data_crs = info['crs']
     if data_crs is None:
@@ -495,21 +486,27 @@ def _streamline_is_in_dem_bounds(stream: str, dem_bounds: tuple[float, float, fl
     stream_bounds = all_stream_bounds.get(os.path.basename(stream))
     if stream_bounds is None:
         info = pyogrio_read_info(stream)
-        stream_bounds = info['bbox']
+        stream_bounds = info.get('bbox')
+        if not stream_bounds:
+            stream_bounds = info['total_bounds']
         all_stream_bounds[os.path.basename(stream)] = stream_bounds
 
     return bounds_intersect(stream_bounds, dem_bounds)
+
+def get_streamlines_in_extent(bounds: tuple[float, float, float, float], streamlines: list[str]) -> list[str]:
+    """Return the stream parquet files whose stored bounds intersect a DEM tile."""
+    streamlines_to_clip = []
+    for stream in streamlines:
+        if _streamline_is_in_dem_bounds(stream, bounds):
+            streamlines_to_clip.append(stream)
+
+    return streamlines_to_clip
 
 def get_streamlines_in_dem_extent(dem: str, streamlines: list[str]) -> list[str]:
     """Return the stream parquet files whose stored bounds intersect a DEM tile."""
     dem_bounds = get_raster_bbox(dem)
 
-    streamlines_to_clip = []
-    for stream in streamlines:
-        if _streamline_is_in_dem_bounds(stream, dem_bounds):
-            streamlines_to_clip.append(stream)
-
-    return streamlines_to_clip
+    return get_streamlines_in_extent(dem_bounds, streamlines)
 
 def clip_streamlines_to_dem(dem: str, streamlines: list[str], output: str):
     """Clip one or more stream parquet files to a DEM footprint and save the result."""
@@ -688,3 +685,106 @@ def unbuffer_and_mask_oceans(unbuffered_dem: str, floodmap: str, land_use: str =
 
     # Now safely write to COG
     gdal.GetDriverByName("COG").CreateCopy(floodmap, mem_ds, options=['COMPRESS=DEFLATE', 'PREDICTOR=2'])
+
+def _apply_buffer(bbox, distance):
+    minx, miny, maxx, maxy = bbox
+    return (
+        minx - distance,
+        miny - distance,
+        maxx + distance,
+        maxy + distance,
+    )
+
+
+def _build_options(bbox, vrt, xres=None, yres=None):
+    option_dict = dict(
+        resampleAlg="nearest",
+        outputBounds=bbox,
+    )
+
+    if xres is not None:
+        option_dict["xRes"] = xres
+        option_dict["yRes"] = yres
+        option_dict["targetAlignedPixels"] = True
+
+    if vrt:
+        option_dict["outputSRS"] = "EPSG:4326"
+        return gdal.BuildVRT, gdal.BuildVRTOptions(**option_dict)
+
+    option_dict["dstSRS"] = "EPSG:4326"
+    return gdal.Warp, gdal.WarpOptions(**option_dict)
+
+def clean_stream_raster(stream_raster: str, num_passes: int = 2) -> None:
+    """
+    This function comes from Mike Follum's ARC at https://github.com/MikeFHS/automated-rating-curve
+    """
+    assert num_passes > 0, "num_passes must be greater than 0"
+    
+    # Get stream raster
+    stream_ds: gdal.Dataset = gdal.Open(stream_raster, gdal.GA_Update)
+    array: np.ndarray = stream_ds.ReadAsArray().astype(np.int64)
+    
+    # Create an array that is slightly larger than the STRM Raster Array
+    array = np.pad(array, ((1, 1), (1, 1)), mode='constant', constant_values=0)
+    
+    row_indices, col_indices = array.nonzero()
+    num_nonzero = len(row_indices)
+    
+    for _ in range(num_passes):
+        # First pass is just to get rid of single cells hanging out not doing anything
+        n=0
+        for x in range(num_nonzero):
+            r = row_indices[x]
+            c = col_indices[x]
+            if array[r,c] <= 0:
+                continue
+
+            # Left and Right cells are zeros
+            if array[r,c + 1] == 0 and array[r, c - 1] == 0:
+                # The bottom cells are all zeros as well, but there is a cell directly above that is legit
+                if (array[r+1,c-1]+array[r+1,c]+array[r+1,c+1])==0 and array[r-1,c]>0:
+                    array[r,c] = 0
+                    n=n+1
+                # The top cells are all zeros as well, but there is a cell directly below that is legit
+                elif (array[r-1,c-1]+array[r-1,c]+array[r-1,c+1])==0 and array[r+1,c]>0:
+                    array[r,c] = 0
+                    n=n+1
+            # top and bottom cells are zeros
+            if array[r,c]>0 and array[r+1,c]==0 and array[r-1,c]==0:
+                # All cells on the right are zero, but there is a cell to the left that is legit
+                if (array[r+1,c+1]+array[r,c+1]+array[r-1,c+1])==0 and array[r,c-1]>0:
+                    array[r,c] = 0
+                    n=n+1
+                elif (array[r+1,c-1]+array[r,c-1]+array[r-1,c-1])==0 and array[r,c+1]>0:
+                    array[r,c] = 0
+                    n=n+1
+        
+        
+        # This pass is to remove all the redundant cells
+        n = 0
+        for x in range(num_nonzero):
+            r = row_indices[x]
+            c = col_indices[x]
+            value = array[r,c]
+            if value<=0:
+                continue
+
+            if array[r+1,c] == value and (array[r+1, c+1] == value or array[r+1, c-1] == value):
+                if array[r+1,c-1:c+2].max() == 0:
+                    array[r+ 1 , c] = 0
+                    n = n + 1
+            elif array[r-1,c] == value and (array[r-1, c+1] == value or array[r-1, c-1] == value):
+                if array[r-1,c-1:c+2].max() == 0:
+                    array[r- 1 , c] = 0
+                    n = n + 1
+            elif array[r,c+1] == value and (array[r+1, c+1] == value or array[r-1, c+1] == value):
+                if array[r-1:r+1,c+2].max() == 0:
+                    array[r, c + 1] = 0
+                    n = n + 1
+            elif array[r,c-1] == value and (array[r+1, c-1] == value or array[r-1, c-1] == value):
+                if array[r-1:r+1,c-2].max() == 0:
+                        array[r, c - 1] = 0
+                        n = n + 1
+    
+    # Write the cleaned array to the raster
+    stream_ds.WriteArray(array[1:-1, 1:-1])
