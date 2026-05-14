@@ -26,6 +26,12 @@ from .utility_functions import (
 )
 from ._constants import DEFAULT_MANNINGS_FILE, ESA_TILES_FILE
 
+def ignore_if_dead(method):
+    def wrapper(self, *args, **kwargs):
+        if self.dead:
+            return self
+        return method(self, *args, **kwargs)
+    return wrapper
 
 class Domain(ABC):
     def __init__(self, ):
@@ -47,6 +53,8 @@ class Domain(ABC):
         self.baseflow_floodmap = None
         self.flood_flow_files = set()
         self.flood_maps = set()
+
+        self.dead = False
 
         self.setup()
 
@@ -125,6 +133,7 @@ class LocalDomain(Domain):
             raise ValueError("DEM must be assigned before accessing the raster.")
         return Raster(self.dem)
 
+    @ignore_if_dead
     def assign_dem(self, 
                    dem: str = None, 
                    bbox: tuple = None, 
@@ -220,6 +229,7 @@ class LocalDomain(Domain):
 
         return self
     
+    @ignore_if_dead
     def generate_stream_raster_from_RFS(self, 
                                         stream_geometry: str | list[str], 
                                         attribute: str = 'LINKNO', 
@@ -245,6 +255,10 @@ class LocalDomain(Domain):
                 gdf = read_any_geom(streamlines[0], bbox=bbox)
             else:
                 gdf = pd.concat([read_any_geom(path, bbox=bbox) for path in streamlines], ignore_index=True)
+
+            if gdf.empty:
+                self.dead = True
+                return self
 
             save_any_geom(gdf, self.stream_geometry, compression='brotli', write_covering_bbox=True)
 
@@ -272,6 +286,7 @@ class LocalDomain(Domain):
 
         return self
     
+    @ignore_if_dead
     def generate_land_cover(self, land_cover_cache: list[str] = None, vrt: bool = False, overwrite: bool = False) -> Self:
         if not self.dem:
             raise ValueError("DEM must be assigned before generating land cover.")
@@ -329,6 +344,7 @@ class LocalDomain(Domain):
 
         return self
     
+    @ignore_if_dead
     def generate_bathy_water_mask(self, water_class: int = 80, overwrite: bool = False) -> Self:
         if not self.land_cover:
             raise ValueError("Land cover must be generated before generating bathymetry water mask.")
@@ -354,6 +370,7 @@ class LocalDomain(Domain):
 
         return self
 
+    @ignore_if_dead
     def generate_base_max_flows(self, 
                                 parquet: bool = True,
                                 overwrite: bool = False) -> Self:
@@ -419,6 +436,7 @@ class LocalDomain(Domain):
 
         return self
         
+    @ignore_if_dead
     def define_arc_configs(self, 
                            mannings_n_file: str = DEFAULT_MANNINGS_FILE,
                            baseflow: str = 'p_exceed_50',
@@ -516,6 +534,7 @@ class LocalDomain(Domain):
         
         return self
     
+    @ignore_if_dead
     def generate_flood_flow_file_from_base_max_file(self, columns: str | list[str], parquet: bool = True, overwrite: bool = False) -> Self:
         if not self.base_max_flow_file:
             raise ValueError("Base/max flow file must be generated before generating flood flow file.")
@@ -534,6 +553,7 @@ class LocalDomain(Domain):
         self.flood_flow_files.add(flood_flow_file)
         return self
     
+    @ignore_if_dead
     def define_c2f_configs(self, 
                            use_burned_dem: bool = False,
                            flood_lc_and_streams: bool = False,
