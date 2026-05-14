@@ -1,26 +1,25 @@
 from __future__ import annotations
 
 import os
+import json
 import pickle
 import threading
 from pathlib import Path
 from typing import Any
 
 import lmdb
-from propcache import cached_property
 
+import pyogrio
 import geopandas as gpd
 from shapely.geometry import box
-from osgeo import gdal, osr
 
-gdal.UseExceptions()
 
 _CACHE_LOCK = threading.RLock()
 
-_CACHE_DIR = Path.home() / ".raster_cache"
+_CACHE_DIR = Path.home() / ".vector_cache"
 _CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
-LMDB_PATH = _CACHE_DIR / "raster_metadata.lmdb"
+LMDB_PATH = _CACHE_DIR / "vector_metadata.lmdb"
 _LMDB_ENV = lmdb.open(
     str(LMDB_PATH),
     map_size=1024**3,  # 1 GB
@@ -81,31 +80,11 @@ def _save_cached_metadata(
     with _LMDB_ENV.begin(write=True) as txn:
         txn.put(key, value)
 
-class Raster:
+class Vector:
     def __init__(self, filepath: str):
         self.filepath = os.path.abspath(filepath)
 
         self._metadata = self._load_or_compute_metadata()
-
-    @cached_property
-    def ds(self) -> gdal.Dataset:
-        return gdal.Open(self.filepath)
-
-    @property
-    def geotransform(self) -> tuple:
-        return tuple(self._metadata["geotransform"])
-
-    @property
-    def projection(self) -> str:
-        return self._metadata["projection"]
-
-    @property
-    def shape(self) -> tuple:
-        return tuple(self._metadata["shape"])
-
-    @property
-    def resolution(self) -> tuple:
-        return tuple(self._metadata["resolution"])
 
     @property
     def bbox(self) -> tuple:
@@ -114,6 +93,10 @@ class Raster:
     @property
     def epsg_4326_bbox(self) -> tuple:
         return tuple(self._metadata["epsg_4326_bbox"])
+    
+    @property
+    def projection(self) -> str:
+        return self._metadata["projection"]
 
     def _load_or_compute_metadata(self) -> dict[str, Any]:
         timestamp = _get_file_timestamp(self.filepath)
@@ -148,58 +131,28 @@ class Raster:
         return metadata
     
     def _compute_metadata(self) -> dict[str, Any]:
-        ds = self.ds
+        info = pyogrio.read_info(self.filepath, force_total_bounds=True)
+        projection = info['crs']
+        if projection is None:
+            import pyarrow.parquet as pq
 
-        geotransform = ds.GetGeoTransform()
-        projection = ds.GetProjection()
+            parquet_file = pq.ParquetFile(self.filepath)
 
-        shape = (
-            ds.RasterXSize,
-            ds.RasterYSize,
-        )
+            # Retrieve the file metadata
+            metadata = parquet_file.metadata
+            geo_metadata = json.loads(metadata.metadata[b'geo'].decode('utf-8'))
+            projection = ":".join(map(str,geo_metadata['columns']['geometry']['crs']['id'].values()))
 
-        resolution = (
-            abs(geotransform[1]),
-            abs(geotransform[5]),
-        )
-
-        width, height = shape
-
-        minx = geotransform[0]
-        maxx = geotransform[0] + width * geotransform[1]
-        miny = geotransform[3] + height * geotransform[5]
-        maxy = geotransform[3]
-
-        if miny > maxy:
-            miny, maxy = maxy, miny
-
-        bbox = (
-            minx,
-            miny,
-            maxx,
-            maxy,
-        )
-
-        srs = osr.SpatialReference(projection)
-        srs.AutoIdentifyEPSG()
-
-        if srs.IsGeographic() and srs.GetAuthorityCode(None) == "4326":
-            epsg_4326_bbox = bbox
+        bbox = info['total_bounds']
+        if projection is not None and projection != 'EPSG:4326':
+            minx, miny, maxx, maxy = bbox
+            gdf_bbox = gpd.GeoSeries([box(minx, miny, maxx, maxy)], crs=projection).to_crs(4326)
+            epsg_4326_bbox = gdf_bbox.total_bounds
         else:
-            epsg_4326_bbox = tuple(
-                gpd.GeoSeries(
-                    [box(*bbox)],
-                    crs=projection,
-                )
-                .to_crs("EPSG:4326")
-                .total_bounds
-            )
+            epsg_4326_bbox = bbox
 
         return {
-            "geotransform": geotransform,
             "projection": projection,
-            "shape": shape,
-            "resolution": resolution,
             "bbox": bbox,
             "epsg_4326_bbox": epsg_4326_bbox,
         }

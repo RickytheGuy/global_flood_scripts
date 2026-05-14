@@ -8,6 +8,7 @@ from typing import Iterable
 import pyogrio
 import pandas as pd
 import numpy as np
+from numba import njit
 import geopandas as gpd
 from osgeo import gdal, ogr, osr
 import xarray as xr
@@ -16,6 +17,8 @@ import pyarrow.parquet as pq
 
 from ._constants import STREAM_BOUNDS_FILE, STORAGE_OPTIONS, DEFAULT_TILES_FILE
 from .logger import LOG
+from .raster import Raster
+from .vector import Vector
 
 gdal.UseExceptions()
 os.environ["AWS_NO_SIGN_REQUEST"] = "YES"
@@ -82,90 +85,6 @@ def opens_right(path: str, read: bool = False) -> bool:
 def rewrite_file_as_parquet_with_covering_bbox(geometry_file: str, output_proj = 4326) -> None:
     """Rewrite a GeoParquet file with covering-bbox metadata for faster bbox reads."""
     read_any_geom(geometry_file).to_crs(output_proj).to_parquet(geometry_file, index=False, compression='brotli', write_covering_bbox=True)
-    
-def clean_stream_raster(stream_raster: str, num_passes: int = 2) -> bool:
-    """
-    This function comes from Mike Follum's ARC at https://github.com/MikeFHS/automated-rating-curve
-    Returns whether there was any stream data in the raster
-    """
-    assert num_passes > 0, "num_passes must be greater than 0"
-    
-    # Get stream raster
-    stream_ds: gdal.Dataset = gdal.Open(stream_raster, gdal.GA_Update)
-    array = np.empty((stream_ds.RasterYSize + 2, stream_ds.RasterXSize + 2), dtype=np.int64)
-    # array[1:-1, 1:-1] = stream_ds.ReadAsArray()
-    stream_ds.ReadAsArray(buf_obj=array[1:-1, 1:-1])
-    
-    # Create an array that is slightly larger than the STRM Raster Array
-    # array = np.pad(array, ((1, 1), (1, 1)), mode='constant', constant_values=0)
-    
-    row_indices, col_indices = array.nonzero()
-    num_nonzero = len(row_indices)
-    saw = False
-    
-    for _ in range(num_passes):
-        # First pass is just to get rid of single cells hanging out not doing anything
-        n=0
-        for x in range(num_nonzero):
-            r = row_indices[x]
-            c = col_indices[x]
-            if array[r,c] <= 0:
-                continue
-
-            saw = True
-            # Left and Right cells are zeros
-            if array[r,c + 1] == 0 and array[r, c - 1] == 0:
-                # The bottom cells are all zeros as well, but there is a cell directly above that is legit
-                if (array[r+1,c-1]+array[r+1,c]+array[r+1,c+1])==0 and array[r-1,c]>0:
-                    array[r,c] = 0
-                    n=n+1
-                # The top cells are all zeros as well, but there is a cell directly below that is legit
-                elif (array[r-1,c-1]+array[r-1,c]+array[r-1,c+1])==0 and array[r+1,c]>0:
-                    array[r,c] = 0
-                    n=n+1
-            # top and bottom cells are zeros
-            if array[r,c]>0 and array[r+1,c]==0 and array[r-1,c]==0:
-                # All cells on the right are zero, but there is a cell to the left that is legit
-                if (array[r+1,c+1]+array[r,c+1]+array[r-1,c+1])==0 and array[r,c-1]>0:
-                    array[r,c] = 0
-                    n=n+1
-                elif (array[r+1,c-1]+array[r,c-1]+array[r-1,c-1])==0 and array[r,c+1]>0:
-                    array[r,c] = 0
-                    n=n+1
-        
-        
-        # This pass is to remove all the redundant cells
-        n = 0
-        for x in range(num_nonzero):
-            r = row_indices[x]
-            c = col_indices[x]
-            value = array[r,c]
-            if value<=0:
-                continue
-
-            saw = True
-            if array[r+1,c] == value and (array[r+1, c+1] == value or array[r+1, c-1] == value):
-                if array[r+1,c-1:c+2].max() == 0:
-                    array[r+ 1 , c] = 0
-                    n = n + 1
-            elif array[r-1,c] == value and (array[r-1, c+1] == value or array[r-1, c-1] == value):
-                if array[r-1,c-1:c+2].max() == 0:
-                    array[r- 1 , c] = 0
-                    n = n + 1
-            elif array[r,c+1] == value and (array[r+1, c+1] == value or array[r-1, c+1] == value):
-                if array[r-1:r+1,c+2].max() == 0:
-                    array[r, c + 1] = 0
-                    n = n + 1
-            elif array[r,c-1] == value and (array[r+1, c-1] == value or array[r-1, c-1] == value):
-                if array[r-1:r+1,c-2].max() == 0:
-                        array[r, c - 1] = 0
-                        n = n + 1
-    
-    # Write the cleaned array to the raster
-    stream_ds.WriteArray(array[1:-1, 1:-1])
-    stream_ds.FlushCache()
-
-    return saw
 
 def get_fabdem_in_extent(minx: float, 
                          miny: float, 
@@ -219,7 +138,7 @@ def filter_files_in_extent(minx: float,
 def get_rasters_in_extent(bounds: list[float], rasters: list[str]) -> list[str]:
     output = set()
     for raster in rasters:
-        raster_bounds = get_raster_bbox(raster)
+        raster_bounds = Raster(raster).epsg_4326_bbox
         if bounds_intersect(bounds, raster_bounds):
             output.add(raster)
 
@@ -438,6 +357,7 @@ def extract_base_path(path: str) -> str:
     return match.group(1).replace('\\', '/')
 
 @cache
+@profile
 def pyogrio_read_info(path: str) -> dict:
     info = pyogrio.read_info(path)
     data_crs = info['crs']
@@ -479,15 +399,9 @@ def read_any_geom(path: str, bbox: list[float] = None, columns: list[str] = None
     
     return gpd.read_file(path, use_arrow=True, bbox=bbox, columns=columns)
 
+@profile
 def _streamline_is_in_dem_bounds(stream: str, dem_bounds: tuple[float, float, float, float]) -> bool:
-    all_stream_bounds = _get_stream_bounds()
-    stream_bounds = all_stream_bounds.get(os.path.basename(stream))
-    if stream_bounds is None:
-        info = pyogrio_read_info(stream)
-        stream_bounds = info.get('bbox')
-        if not stream_bounds:
-            stream_bounds = info['total_bounds']
-        all_stream_bounds[os.path.basename(stream)] = stream_bounds
+    stream_bounds = Vector(stream).epsg_4326_bbox
 
     return bounds_intersect(stream_bounds, dem_bounds)
 
@@ -712,77 +626,85 @@ def _build_options(bbox, vrt, xres=None, yres=None):
     option_dict["dstSRS"] = "EPSG:4326"
     return gdal.Warp, gdal.WarpOptions(**option_dict)
 
-def clean_stream_raster(stream_raster: str, num_passes: int = 2) -> None:
+@njit(cache=True, nogil=True)
+def _clean_stream_raster_numba(array: np.ndarray) -> np.ndarray:
+    mask = array > 0
+    array = np.where(mask, array, 0)
+    (RR,CC) = np.where(mask)
+    num_nonzero = len(RR)
+    first_pass = 0
+    second_pass = 0
+    
+    for filterpass in range(2):
+        #First pass is just to get rid of single cells hanging out not doing anything
+        p_count = 0
+        p_percent = (num_nonzero+1)/100.0
+        for x in range(num_nonzero):
+            if x>=p_count*p_percent:
+                p_count = p_count + 1
+            r=RR[x]
+            c=CC[x]
+            V = array[r,c]
+            if V>0:
+                #Left and Right cells are zeros
+                if array[r,c+1]==0 and array[r,c-1]==0:
+                    #The bottom cells are all zeros as well, but there is a cell directly above that is legit
+                    if (array[r+1,c-1]+array[r+1,c]+array[r+1,c+1])==0 and array[r-1,c]>0:
+                        array[r,c] = 0
+                        first_pass += 1
+                    #The top cells are all zeros as well, but there is a cell directly below that is legit
+                    elif (array[r-1,c-1]+array[r-1,c]+array[r-1,c+1])==0 and array[r+1,c]>0:
+                        array[r,c] = 0
+                        first_pass += 1
+                #top and bottom cells are zeros
+                if array[r,c]>0 and array[r+1,c]==0 and array[r-1,c]==0:
+                    #All cells on the right are zero, but there is a cell to the left that is legit
+                    if (array[r+1,c+1]+array[r,c+1]+array[r-1,c+1])==0 and array[r,c-1]>0:
+                        array[r,c] = 0
+                        first_pass += 1
+                    elif (array[r+1,c-1]+array[r,c-1]+array[r-1,c-1])==0 and array[r,c+1]>0:
+                        array[r,c] = 0
+                        first_pass += 1
+        
+        #This pass is to remove all the redundant cells
+        p_count = 0
+        p_percent = (num_nonzero+1)/100.0
+        for x in range(num_nonzero):
+            if x>=p_count*p_percent:
+                p_count = p_count + 1
+            r=RR[x]
+            c=CC[x]
+            V = array[r,c]
+            if V>0:
+                if array[r+1,c]==V and (array[r+1,c+1]==V or array[r+1,c-1]==V):
+                    if sum(array[r+1,c-1:c+2])==0:
+                        array[r+1,c] = 0
+                        second_pass += 1
+                elif array[r-1,c]==V and (array[r-1,c+1]==V or array[r-1,c-1]==V):
+                    if sum(array[r-1,c-1:c+2])==0:
+                        array[r-1,c] = 0
+                        second_pass += 1
+                elif array[r,c+1]==V and (array[r+1,c+1]==V or array[r-1,c+1]==V):
+                    if sum(array[r-1:r+1,c+2])==0:
+                        array[r,c+1] = 0
+                        second_pass += 1
+                elif array[r,c-1]==V and (array[r+1,c-1]==V or array[r-1,c-1]==V):
+                    if sum(array[r-1:r+1,c-2])==0:
+                            array[r,c-1] = 0
+                            second_pass += 1
+
+def clean_stream_raster(stream_ds: gdal.Dataset, num_passes: int = 2) -> None:
     """
     This function comes from Mike Follum's ARC at https://github.com/MikeFHS/automated-rating-curve
     """
     assert num_passes > 0, "num_passes must be greater than 0"
     
     # Get stream raster
-    stream_ds: gdal.Dataset = gdal.Open(stream_raster, gdal.GA_Update)
-    array: np.ndarray = stream_ds.ReadAsArray().astype(np.int64)
-    
-    # Create an array that is slightly larger than the STRM Raster Array
-    array = np.pad(array, ((1, 1), (1, 1)), mode='constant', constant_values=0)
-    
-    row_indices, col_indices = array.nonzero()
-    num_nonzero = len(row_indices)
-    
-    for _ in range(num_passes):
-        # First pass is just to get rid of single cells hanging out not doing anything
-        n=0
-        for x in range(num_nonzero):
-            r = row_indices[x]
-            c = col_indices[x]
-            if array[r,c] <= 0:
-                continue
+    shape = (stream_ds.RasterYSize + 2, stream_ds.RasterXSize + 2)
+    array = np.zeros(shape, dtype=np.int32)
+    array[1:-1, 1:-1] = stream_ds.ReadAsArray()
 
-            # Left and Right cells are zeros
-            if array[r,c + 1] == 0 and array[r, c - 1] == 0:
-                # The bottom cells are all zeros as well, but there is a cell directly above that is legit
-                if (array[r+1,c-1]+array[r+1,c]+array[r+1,c+1])==0 and array[r-1,c]>0:
-                    array[r,c] = 0
-                    n=n+1
-                # The top cells are all zeros as well, but there is a cell directly below that is legit
-                elif (array[r-1,c-1]+array[r-1,c]+array[r-1,c+1])==0 and array[r+1,c]>0:
-                    array[r,c] = 0
-                    n=n+1
-            # top and bottom cells are zeros
-            if array[r,c]>0 and array[r+1,c]==0 and array[r-1,c]==0:
-                # All cells on the right are zero, but there is a cell to the left that is legit
-                if (array[r+1,c+1]+array[r,c+1]+array[r-1,c+1])==0 and array[r,c-1]>0:
-                    array[r,c] = 0
-                    n=n+1
-                elif (array[r+1,c-1]+array[r,c-1]+array[r-1,c-1])==0 and array[r,c+1]>0:
-                    array[r,c] = 0
-                    n=n+1
-        
-        
-        # This pass is to remove all the redundant cells
-        n = 0
-        for x in range(num_nonzero):
-            r = row_indices[x]
-            c = col_indices[x]
-            value = array[r,c]
-            if value<=0:
-                continue
-
-            if array[r+1,c] == value and (array[r+1, c+1] == value or array[r+1, c-1] == value):
-                if array[r+1,c-1:c+2].max() == 0:
-                    array[r+ 1 , c] = 0
-                    n = n + 1
-            elif array[r-1,c] == value and (array[r-1, c+1] == value or array[r-1, c-1] == value):
-                if array[r-1,c-1:c+2].max() == 0:
-                    array[r- 1 , c] = 0
-                    n = n + 1
-            elif array[r,c+1] == value and (array[r+1, c+1] == value or array[r-1, c+1] == value):
-                if array[r-1:r+1,c+2].max() == 0:
-                    array[r, c + 1] = 0
-                    n = n + 1
-            elif array[r,c-1] == value and (array[r+1, c-1] == value or array[r-1, c-1] == value):
-                if array[r-1:r+1,c-2].max() == 0:
-                        array[r, c - 1] = 0
-                        n = n + 1
+    _clean_stream_raster_numba(array)
     
     # Write the cleaned array to the raster
     stream_ds.WriteArray(array[1:-1, 1:-1])

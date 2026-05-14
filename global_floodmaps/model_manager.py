@@ -31,6 +31,7 @@ class ModelManager:
                 tasks.append(domain.arc_config)
         return tasks
 
+    @profile
     def run(self, overwrite=False, processes: int = 1, pbar: bool = True):
         # Sort domains by their DEM size, largest to smallest, to optimize memory usage
         self.domains.sort(key=lambda d: d.get_priority())

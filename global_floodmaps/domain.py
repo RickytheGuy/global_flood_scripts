@@ -69,6 +69,7 @@ class Domain(ABC):
     def setup(self):
         pass
 
+    @profile
     def assign_source_dem(self, dem: str | list[str]) -> Self:
         if isinstance(dem, str):
             self.source_dems.append(dem)
@@ -141,13 +142,15 @@ class LocalDomain(Domain):
         if not self.dem:
             raise ValueError("DEM must be assigned before accessing the raster.")
         return Raster(self.dem)
-
+    
+    @profile
     def assign_dem(self, 
                    dem: str = None, 
                    bbox: tuple = None, 
                    buffer: bool = False,
                    vrt: bool = False, 
                    buffer_distance: float = 0.05, 
+                   raise_error_if_no_dems: bool = True,
                    overwrite: bool = False) -> Self:
         if buffer and not self.source_dems:
             raise ValueError(
@@ -216,9 +219,13 @@ class LocalDomain(Domain):
             )
 
             if not surrounding_dems:
-                raise ValueError(
-                    "No source DEMs intersect the specified bounding box."
-                )
+                if raise_error_if_no_dems:
+                    raise ValueError(
+                        "No source DEMs intersect the specified bounding box."
+                    )
+                
+                self.dead = True
+                return self
 
         xres = yres = None
 
@@ -238,6 +245,7 @@ class LocalDomain(Domain):
         return self
     
     @ignore_if_dead
+    @profile
     def generate_stream_raster_from_RFS(self, 
                                         stream_geometry: str | list[str], 
                                         attribute: str = 'LINKNO', 
@@ -252,24 +260,26 @@ class LocalDomain(Domain):
         os.makedirs(os.path.dirname(self.stream_geometry), exist_ok=True)
 
         if not os.path.exists(self.stream_geometry) or not os.path.exists(self.stream_raster) or overwrite:
-            dem_raster: Raster = self.dem_raster
-            bbox = dem_raster.epsg_4326_bbox
+            bbox = self.dem_raster.epsg_4326_bbox
 
             streamlines = get_streamlines_in_extent(bbox, stream_geometry if isinstance(stream_geometry, list) else [stream_geometry])
             if not streamlines:
                 if raise_error_if_no_streams:
                     raise ValueError("No RFS stream geometry files intersect the DEM extent.")
-                else:
-                    self.dead = True
-                    return self
+                
+                self.dead = True
+                return self
 
         if not os.path.exists(self.stream_geometry) or overwrite:
             if len(streamlines) == 1:
                 gdf = read_any_geom(streamlines[0], bbox=bbox)
             else:
-                gdf = pd.concat([read_any_geom(path, bbox=bbox) for path in streamlines], ignore_index=True)
+                gdf = pd.concat([read_any_geom(path, bbox=bbox) for path in streamlines], ignore_index=True, copy=False)
 
             if gdf.empty:
+                if raise_error_if_no_streams:
+                    raise ValueError("No stream geometries intersect the DEM extent.")
+                
                 self.dead = True
                 return self
 
@@ -298,14 +308,15 @@ class LocalDomain(Domain):
                             options=[f"ATTRIBUTE={attribute}"],)
         temp = None
         stream_ds.FlushCache()
-        stream_ds = None
 
         # Clean the raster
-        clean_stream_raster(self.stream_raster)
+        clean_stream_raster(stream_ds)
+        stream_ds = None
 
         return self
     
     @ignore_if_dead
+    @profile
     def generate_land_cover(self, land_cover_cache: list[str] = None, vrt: bool = False, overwrite: bool = False) -> Self:
         if not self.dem:
             raise ValueError("DEM must be assigned before generating land cover.")
@@ -318,7 +329,7 @@ class LocalDomain(Domain):
 
         bounds = self.dem_raster.epsg_4326_bbox
         bbox = box(*bounds)
-        tiles = set(gpd.read_file(ESA_TILES_FILE, bbox=bbox, ignore_geometry=True, use_arrow=True)['ll_tile'])
+        tiles = set(gpd.read_file(ESA_TILES_FILE, columns=['ll_tile'], bbox=bbox, ignore_geometry=True, use_arrow=True)['ll_tile'])
 
         landcover_files = []
         if land_cover_cache:
@@ -364,6 +375,7 @@ class LocalDomain(Domain):
         return self
     
     @ignore_if_dead
+    @profile
     def generate_bathy_water_mask(self, water_class: int = 80, overwrite: bool = False) -> Self:
         if not self.land_cover:
             raise ValueError("Land cover must be generated before generating bathymetry water mask.")
@@ -390,6 +402,7 @@ class LocalDomain(Domain):
         return self
 
     @ignore_if_dead
+    @profile
     def generate_base_max_flows(self, 
                                 parquet: bool = True,
                                 overwrite: bool = False) -> Self:
@@ -456,6 +469,7 @@ class LocalDomain(Domain):
         return self
         
     @ignore_if_dead
+    @profile
     def define_arc_configs(self, 
                            mannings_n_file: str = DEFAULT_MANNINGS_FILE,
                            baseflow: str = 'p_exceed_50',
@@ -554,6 +568,7 @@ class LocalDomain(Domain):
         return self
     
     @ignore_if_dead
+    @profile
     def generate_flood_flow_file_from_base_max_file(self, columns: str | list[str], parquet: bool = True, overwrite: bool = False) -> Self:
         if not self.base_max_flow_file:
             raise ValueError("Base/max flow file must be generated before generating flood flow file.")
