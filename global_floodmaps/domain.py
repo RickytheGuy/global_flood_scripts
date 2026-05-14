@@ -1,6 +1,7 @@
 import os
 import tempfile
 import datetime
+import warnings
 from abc import ABC, abstractmethod
 from typing import Literal
 try:
@@ -10,6 +11,7 @@ except ImportError:
 
 os.environ["AWS_NO_SIGN_REQUEST"] = "YES"
 os.environ["AWS_S3_ENDPOINT"] = "s3.amazonaws.com"
+os.environ["KMP_WARNINGS"] = "0"
 
 import numpy as np
 import pandas as pd
@@ -102,6 +104,13 @@ class Domain(ABC):
     def generate_flood_flow_file_from_base_max_file(self, columns: str | list[str], parquet: bool = True, overwrite: bool = False) -> Self:
         pass
 
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        # Don't pickle the raster objects
+        if 'dem_raster' in state:
+            del state['dem_raster']
+        return state
+
 class LocalDomain(Domain):
     def __init__(self, directory: str):
         self.directory = directory
@@ -133,7 +142,6 @@ class LocalDomain(Domain):
             raise ValueError("DEM must be assigned before accessing the raster.")
         return Raster(self.dem)
 
-    @ignore_if_dead
     def assign_dem(self, 
                    dem: str = None, 
                    bbox: tuple = None, 
@@ -233,6 +241,7 @@ class LocalDomain(Domain):
     def generate_stream_raster_from_RFS(self, 
                                         stream_geometry: str | list[str], 
                                         attribute: str = 'LINKNO', 
+                                        raise_error_if_no_streams: bool = True,
                                         overwrite: bool = False) -> Self:
         if not self.dem:
             raise ValueError("DEM must be assigned before generating stream raster.")
@@ -248,8 +257,12 @@ class LocalDomain(Domain):
 
             streamlines = get_streamlines_in_extent(bbox, stream_geometry if isinstance(stream_geometry, list) else [stream_geometry])
             if not streamlines:
-                raise ValueError("No RFS stream geometry files intersect the DEM extent.")
-                    
+                if raise_error_if_no_streams:
+                    raise ValueError("No RFS stream geometry files intersect the DEM extent.")
+                else:
+                    self.dead = True
+                    return self
+
         if not os.path.exists(self.stream_geometry) or overwrite:
             if len(streamlines) == 1:
                 gdf = read_any_geom(streamlines[0], bbox=bbox)
@@ -264,6 +277,12 @@ class LocalDomain(Domain):
 
         if os.path.exists(self.stream_raster) and not overwrite:
             return self
+        
+        warnings.filterwarnings(
+            "once",
+            message="Failed to fetch spatial reference on layer.*",
+            category=RuntimeWarning,
+        )
         
         dem_raster: Raster = self.dem_raster
         stream_ds: gdal.Dataset = gdal.GetDriverByName('GTiff').Create(self.stream_raster, dem_raster.shape[1], dem_raster.shape[0], 1, gdal.GDT_Int32, options=['COMPRESS=DEFLATE', 'PREDICTOR=2'])

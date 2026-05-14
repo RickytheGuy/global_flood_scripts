@@ -9,7 +9,7 @@ from .retrospective import (
     run_retrospective_workflow,
 )
 from .utility_functions import (
-    convert_area_to_single_map, convert_area_to_single_vrt
+    convert_area_to_single_map, convert_area_to_single_vrt, load_default_tiles,
 )
 from .domain import  LocalDomain
 from .logger import LOG
@@ -30,4 +30,5 @@ __all__ = [
     "default_nencarta_kwargs",
     "discover_retrospective_inputs",
     "run_retrospective_workflow",
+    "load_default_tiles",
 ]

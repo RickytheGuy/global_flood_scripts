@@ -14,15 +14,13 @@ import xarray as xr
 from shapely.geometry import box
 import pyarrow.parquet as pq
 
-from ._constants import STREAM_BOUNDS_FILE, STORAGE_OPTIONS
+from ._constants import STREAM_BOUNDS_FILE, STORAGE_OPTIONS, DEFAULT_TILES_FILE
 from .logger import LOG
 
 gdal.UseExceptions()
 os.environ["AWS_NO_SIGN_REQUEST"] = "YES"
 os.environ["AWS_S3_ENDPOINT"] = "s3.amazonaws.com"
-
-STREAM_BOUNDS = None
-
+os.environ["KMP_WARNINGS"] = "0"
 
 @cache
 def _get_stream_bounds() -> dict[str, list[float]]:
@@ -81,9 +79,9 @@ def opens_right(path: str, read: bool = False) -> bool:
     except:
         return False
     
-def rewrite_file_as_parquet_with_covering_bbox(geometry_file: str) -> None:
+def rewrite_file_as_parquet_with_covering_bbox(geometry_file: str, output_proj = 4326) -> None:
     """Rewrite a GeoParquet file with covering-bbox metadata for faster bbox reads."""
-    read_any_geom(geometry_file).to_parquet(geometry_file, index=False, compression='brotli', write_covering_bbox=True)
+    read_any_geom(geometry_file).to_crs(output_proj).to_parquet(geometry_file, index=False, compression='brotli', write_covering_bbox=True)
     
 def clean_stream_raster(stream_raster: str, num_passes: int = 2) -> bool:
     """
@@ -788,3 +786,6 @@ def clean_stream_raster(stream_raster: str, num_passes: int = 2) -> None:
     
     # Write the cleaned array to the raster
     stream_ds.WriteArray(array[1:-1, 1:-1])
+
+def load_default_tiles():
+    return gpd.read_parquet(DEFAULT_TILES_FILE)
