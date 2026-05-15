@@ -357,7 +357,6 @@ def extract_base_path(path: str) -> str:
     return match.group(1).replace('\\', '/')
 
 @cache
-@profile
 def pyogrio_read_info(path: str) -> dict:
     info = pyogrio.read_info(path)
     data_crs = info['crs']
@@ -399,7 +398,6 @@ def read_any_geom(path: str, bbox: list[float] = None, columns: list[str] = None
     
     return gpd.read_file(path, use_arrow=True, bbox=bbox, columns=columns)
 
-@profile
 def _streamline_is_in_dem_bounds(stream: str, dem_bounds: tuple[float, float, float, float]) -> bool:
     stream_bounds = Vector(stream).epsg_4326_bbox
 

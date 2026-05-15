@@ -69,7 +69,6 @@ class Domain(ABC):
     def setup(self):
         pass
 
-    @profile
     def assign_source_dem(self, dem: str | list[str]) -> Self:
         if isinstance(dem, str):
             self.source_dems.append(dem)
@@ -143,7 +142,6 @@ class LocalDomain(Domain):
             raise ValueError("DEM must be assigned before accessing the raster.")
         return Raster(self.dem)
     
-    @profile
     def assign_dem(self, 
                    dem: str = None, 
                    bbox: tuple = None, 
@@ -245,7 +243,6 @@ class LocalDomain(Domain):
         return self
     
     @ignore_if_dead
-    @profile
     def generate_stream_raster_from_RFS(self, 
                                         stream_geometry: str | list[str], 
                                         attribute: str = 'LINKNO', 
@@ -316,7 +313,6 @@ class LocalDomain(Domain):
         return self
     
     @ignore_if_dead
-    @profile
     def generate_land_cover(self, land_cover_cache: list[str] = None, vrt: bool = False, overwrite: bool = False) -> Self:
         if not self.dem:
             raise ValueError("DEM must be assigned before generating land cover.")
@@ -375,7 +371,6 @@ class LocalDomain(Domain):
         return self
     
     @ignore_if_dead
-    @profile
     def generate_bathy_water_mask(self, water_class: int = 80, overwrite: bool = False) -> Self:
         if not self.land_cover:
             raise ValueError("Land cover must be generated before generating bathymetry water mask.")
@@ -402,7 +397,6 @@ class LocalDomain(Domain):
         return self
 
     @ignore_if_dead
-    @profile
     def generate_base_max_flows(self, 
                                 parquet: bool = True,
                                 overwrite: bool = False) -> Self:
@@ -469,7 +463,6 @@ class LocalDomain(Domain):
         return self
         
     @ignore_if_dead
-    @profile
     def define_arc_configs(self, 
                            mannings_n_file: str = DEFAULT_MANNINGS_FILE,
                            baseflow: str = 'p_exceed_50',
@@ -568,7 +561,6 @@ class LocalDomain(Domain):
         return self
     
     @ignore_if_dead
-    @profile
     def generate_flood_flow_file_from_base_max_file(self, columns: str | list[str], parquet: bool = True, overwrite: bool = False) -> Self:
         if not self.base_max_flow_file:
             raise ValueError("Base/max flow file must be generated before generating flood flow file.")
