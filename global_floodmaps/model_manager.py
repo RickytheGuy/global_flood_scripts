@@ -7,7 +7,11 @@ from .domain import Domain
 
 def _run_arc(config: str):
     from arc import Arc
-    Arc(config, quiet=True).run()
+    try:
+        Arc(config, quiet=True).run()
+    except Exception as e:
+        print(config)
+        raise
 
 def _run_c2f(config: str):
     from curve2flood import Curve2Flood_MainFunction
@@ -52,16 +56,20 @@ class ModelManager:
                 for config in tqdm.tqdm(bathy_tasks, desc="Running C2F", disable=not pbar):
                     _run_c2f(config)
 
+            if not arc_tasks and not bathy_tasks:
+                print("No tasks to run.")
+
             return
     
         with mp.Pool(processes) as pool:
             arc_tasks = self.get_arc_tasks(overwrite=overwrite)
             if arc_tasks:
-                for _ in tqdm.tqdm(pool.imap_unordered(_run_arc, arc_tasks), desc="Running ARC", disable=not pbar):
+                for _ in tqdm.tqdm(pool.imap_unordered(_run_arc, arc_tasks), total=len(arc_tasks), desc="Running ARC", disable=not pbar):
                     pass
 
             bathy_tasks = self.get_bathy_tasks(overwrite=overwrite)
             if bathy_tasks:
-                for _ in tqdm.tqdm(pool.imap_unordered(_run_c2f, bathy_tasks), desc="Running C2F", disable=not pbar):
+                for _ in tqdm.tqdm(pool.imap_unordered(_run_c2f, bathy_tasks), total=len(bathy_tasks), desc="Running C2F", disable=not pbar):
                     pass
-            
+            if not arc_tasks and not bathy_tasks:
+                print("No tasks to run.")

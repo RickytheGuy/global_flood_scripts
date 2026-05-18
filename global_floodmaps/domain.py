@@ -122,6 +122,9 @@ class LocalDomain(Domain):
         os.makedirs(self.directory, exist_ok=True)
 
     def get_priority(self):
+        if self.dead:
+            return 0
+        
         if not self.dem:
             raise ValueError("DEM must be assigned before calculating priority.")
         
@@ -229,6 +232,10 @@ class LocalDomain(Domain):
 
         if dem:
             raster = Raster(dem)
+            xres, yres = raster.resolution
+        else:
+            # Use the resolution of the first intersecting DEM as the target resolution
+            raster = Raster(surrounding_dems[0])
             xres, yres = raster.resolution
 
         builder, options = _build_options(
